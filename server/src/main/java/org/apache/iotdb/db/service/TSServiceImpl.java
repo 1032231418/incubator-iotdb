@@ -28,6 +28,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +57,11 @@ import org.apache.iotdb.db.exception.qp.IllegalASTFormatException;
 import org.apache.iotdb.db.exception.qp.QueryProcessorException;
 import org.apache.iotdb.db.metadata.MManager;
 import org.apache.iotdb.db.metadata.Metadata;
+import org.apache.iotdb.db.monitor.IStatistic;
+import org.apache.iotdb.db.monitor.MonitorConstants;
+import org.apache.iotdb.db.monitor.MonitorConstants.FileNodeManagerStatConstants;
+import org.apache.iotdb.db.monitor.MonitorConstants.RequestConstants;
+import org.apache.iotdb.db.monitor.StatMonitor;
 import org.apache.iotdb.db.qp.QueryProcessor;
 import org.apache.iotdb.db.qp.executor.QueryProcessExecutor;
 import org.apache.iotdb.db.qp.physical.PhysicalPlan;
@@ -92,11 +99,15 @@ import org.apache.iotdb.service.rpc.thrift.TSSetTimeZoneResp;
 import org.apache.iotdb.service.rpc.thrift.TS_SessionHandle;
 import org.apache.iotdb.service.rpc.thrift.TS_Status;
 import org.apache.iotdb.service.rpc.thrift.TS_StatusCode;
+import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.common.constant.StatisticConstant;
 import org.apache.iotdb.tsfile.exception.filter.QueryFilterOptimizationException;
+import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.read.query.dataset.QueryDataSet;
+import org.apache.iotdb.tsfile.write.record.TSRecord;
 import org.apache.thrift.TException;
 import org.apache.thrift.server.ServerContext;
 import org.slf4j.Logger;
@@ -106,11 +117,14 @@ import org.slf4j.LoggerFactory;
  * Thrift RPC implementation at server side.
  */
 
-public class TSServiceImpl implements TSIService.Iface, ServerContext {
+public class TSServiceImpl implements TSIService.Iface, ServerContext, IStatistic {
 
   private static final Logger logger = LoggerFactory.getLogger(TSServiceImpl.class);
   private static final String INFO_NOT_LOGIN = "{}: Not login.";
   private static final String ERROR_NOT_LOGIN = "Not login";
+  private static AtomicLong totalRequestNum = new AtomicLong(0);
+  private static final String METRIC_PREFIX = MonitorConstants.STAT_STORAGE_DELTA_NAME + ".request";
+  private StorageEngine storageEngine;
 
   protected QueryProcessor processor;
   // Record the username for every rpc connection. Username.get() is null if
@@ -129,6 +143,13 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext {
 
   public TSServiceImpl() throws IOException {
     processor = new QueryProcessor(new QueryProcessExecutor());
+    storageEngine = StorageEngine.getInstance();
+
+    if (config.isEnableStatMonitor()) {
+      StatMonitor statMonitor = StatMonitor.getInstance();
+      registerStatMetadata();
+      statMonitor.registerStatistics(METRIC_PREFIX, this);
+    }
   }
 
   @Override
@@ -411,6 +432,7 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext {
   @Override
   public TSExecuteBatchStatementResp executeBatchStatement(TSExecuteBatchStatementReq req) {
     long t1 = System.currentTimeMillis();
+    totalRequestNum.incrementAndGet();
     String currStmt = null;
     List<Integer> result = new ArrayList<>();
     try {
@@ -930,6 +952,60 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext {
   @Override
   public long requestStatementId() {
     return globalStmtId.incrementAndGet();
+  }
+
+  @Override
+  public Map<String, TSRecord> getAllStatisticsValue() {
+    long curTime = System.currentTimeMillis();
+    TSRecord tsRecord = StatMonitor
+        .convertToTSRecord(getStatParamsHashMap(), METRIC_PREFIX,
+            curTime);
+    HashMap<String, TSRecord> ret = new HashMap<>();
+    ret.put(METRIC_PREFIX, tsRecord);
+    return ret;
+  }
+
+  @Override
+  public void registerStatMetadata() {
+    Map<String, String> hashMap = new HashMap<>();
+    for (RequestConstants kind : RequestConstants.values()) {
+      String seriesPath = METRIC_PREFIX
+          + MonitorConstants.MONITOR_PATH_SEPARATOR
+          + kind.name();
+      hashMap.put(seriesPath, MonitorConstants.DATA_TYPE_INT64);
+      Path path = new Path(seriesPath);
+      try {
+        storageEngine.addTimeSeries(path, TSDataType.valueOf(MonitorConstants.DATA_TYPE_INT64),
+            TSEncoding.valueOf("RLE"), CompressionType.valueOf(TSFileConfig.compressor),
+            Collections.emptyMap());
+      } catch (StorageEngineException e) {
+        logger.error("Register File Size Stats into storageEngine Failed.", e);
+      }
+    }
+    StatMonitor.getInstance().registerStatStorageGroup(hashMap);
+  }
+
+  @Override
+  public List<String> getAllPathForStatistic() {
+    List<String> list = new ArrayList<>();
+    for (RequestConstants kind : MonitorConstants.RequestConstants.values()) {
+      list.add(
+          METRIC_PREFIX + MonitorConstants.MONITOR_PATH_SEPARATOR
+              + kind.name());
+    }
+    return list;
+  }
+
+  @Override
+  public Map<String, AtomicLong> getStatParamsHashMap() {
+    Map<RequestConstants, Long> fileSizeMap = new EnumMap<>(RequestConstants.class);
+    fileSizeMap.put(RequestConstants.TOTAL_REQ_SUCCESS, totalRequestNum.get());
+    fileSizeMap.put(RequestConstants.TOTAL_REQ_FAIL, 0L);
+    Map<String, AtomicLong> statParamsMap = new HashMap<>();
+    for (RequestConstants kind : MonitorConstants.RequestConstants.values()) {
+      statParamsMap.put(kind.name(), new AtomicLong(fileSizeMap.get(kind)));
+    }
+    return statParamsMap;
   }
 }
 

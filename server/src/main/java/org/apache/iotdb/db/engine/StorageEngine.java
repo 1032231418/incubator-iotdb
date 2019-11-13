@@ -20,10 +20,14 @@ package org.apache.iotdb.db.engine;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.commons.io.FileUtils;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
@@ -36,29 +40,38 @@ import org.apache.iotdb.db.exception.ProcessorException;
 import org.apache.iotdb.db.exception.StorageEngineException;
 import org.apache.iotdb.db.exception.StorageEngineFailureException;
 import org.apache.iotdb.db.metadata.MManager;
+import org.apache.iotdb.db.monitor.IStatistic;
+import org.apache.iotdb.db.monitor.MonitorConstants;
+import org.apache.iotdb.db.monitor.MonitorConstants.FileNodeManagerStatConstants;
+import org.apache.iotdb.db.monitor.StatMonitor;
 import org.apache.iotdb.db.qp.physical.crud.InsertPlan;
 import org.apache.iotdb.db.query.context.QueryContext;
 import org.apache.iotdb.db.service.IService;
 import org.apache.iotdb.db.service.ServiceType;
 import org.apache.iotdb.db.utils.FilePathUtils;
+import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.read.expression.impl.SingleSeriesExpression;
+import org.apache.iotdb.tsfile.write.record.TSRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class StorageEngine implements IService {
+public class StorageEngine implements IService, IStatistic {
 
   private static final Logger logger = LoggerFactory.getLogger(StorageEngine.class);
   private static final IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
 
+  private static final String METRIC_PREFIX = MonitorConstants.STAT_STORAGE_DELTA_NAME;
   /**
    * a folder (system/storage_groups/ by default) that persist system info. Each Storage Processor
    * will have a subfolder under the systemDir.
    */
   private final String systemDir;
+
+  private static AtomicLong totalInsertPoint = new AtomicLong(0);
 
   /**
    * storage group name -> storage group processor
@@ -93,6 +106,12 @@ public class StorageEngine implements IService {
     } catch (ProcessorException | MetadataErrorException e) {
       logger.error("init a storage group processor failed. ", e);
       throw new StorageEngineFailureException(e);
+    }
+
+    if (config.isEnableStatMonitor()) {
+      StatMonitor statMonitor = StatMonitor.getInstance();
+      registerStatMetadata();
+      statMonitor.registerStatistics(METRIC_PREFIX, this);
     }
   }
 
@@ -153,7 +172,7 @@ public class StorageEngine implements IService {
    * @return true if and only if this insertion succeeds
    */
   public boolean insert(InsertPlan insertPlan) throws StorageEngineException {
-
+    totalInsertPoint.addAndGet(insertPlan.getMeasurements().length);
     StorageGroupProcessor storageGroupProcessor;
     try {
       storageGroupProcessor = getProcessor(insertPlan.getDeviceId());
@@ -319,6 +338,60 @@ public class StorageEngine implements IService {
       return false;
     }
     return true;
+  }
+
+  @Override
+  public Map<String, TSRecord> getAllStatisticsValue() {
+    long curTime = System.currentTimeMillis();
+    TSRecord tsRecord = StatMonitor
+        .convertToTSRecord(getStatParamsHashMap(), METRIC_PREFIX,
+            curTime);
+    HashMap<String, TSRecord> ret = new HashMap<>();
+    ret.put(METRIC_PREFIX, tsRecord);
+    return ret;
+  }
+
+  @Override
+  public void registerStatMetadata() {
+    Map<String, String> hashMap = new HashMap<>();
+    for (FileNodeManagerStatConstants kind : FileNodeManagerStatConstants.values()) {
+      String seriesPath = METRIC_PREFIX
+          + MonitorConstants.MONITOR_PATH_SEPARATOR
+          + kind.name();
+      hashMap.put(seriesPath, MonitorConstants.DATA_TYPE_INT64);
+      Path path = new Path(seriesPath);
+      try {
+        addTimeSeries(path, TSDataType.valueOf(MonitorConstants.DATA_TYPE_INT64),
+            TSEncoding.valueOf("RLE"), CompressionType.valueOf(TSFileConfig.compressor),
+            Collections.emptyMap());
+      } catch (StorageEngineException e) {
+        logger.error("Register File Size Stats into storageEngine Failed.", e);
+      }
+    }
+    StatMonitor.getInstance().registerStatStorageGroup(hashMap);
+  }
+
+  @Override
+  public List<String> getAllPathForStatistic() {
+    List<String> list = new ArrayList<>();
+    for (FileNodeManagerStatConstants kind : MonitorConstants.FileNodeManagerStatConstants.values()) {
+      list.add(
+          METRIC_PREFIX + MonitorConstants.MONITOR_PATH_SEPARATOR
+              + kind.name());
+    }
+    return list;
+  }
+
+  @Override
+  public Map<String, AtomicLong> getStatParamsHashMap() {
+    Map<FileNodeManagerStatConstants, Long> fileSizeMap = new EnumMap<>(FileNodeManagerStatConstants.class);
+    fileSizeMap.put(FileNodeManagerStatConstants.TOTAL_POINTS_SUCCESS, totalInsertPoint.get());
+    fileSizeMap.put(FileNodeManagerStatConstants.TOTAL_POINTS_FAIL, 0L);
+    Map<String, AtomicLong> statParamsMap = new HashMap<>();
+    for (FileNodeManagerStatConstants kind : MonitorConstants.FileNodeManagerStatConstants.values()) {
+      statParamsMap.put(kind.name(), new AtomicLong(fileSizeMap.get(kind)));
+    }
+    return statParamsMap;
   }
 
 }

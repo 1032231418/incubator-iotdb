@@ -35,8 +35,6 @@ import org.apache.iotdb.db.exception.StorageEngineException;
 import org.apache.iotdb.db.exception.MetadataErrorException;
 import org.apache.iotdb.db.exception.StartupException;
 import org.apache.iotdb.db.metadata.MManager;
-import org.apache.iotdb.db.monitor.MonitorConstants.FileNodeManagerStatConstants;
-import org.apache.iotdb.db.monitor.MonitorConstants.FileNodeProcessorStatConstants;
 import org.apache.iotdb.db.monitor.collector.FileSize;
 import org.apache.iotdb.db.qp.physical.crud.InsertPlan;
 import org.apache.iotdb.db.service.IService;
@@ -95,12 +93,12 @@ public class StatMonitor implements IService {
   }
 
   private void initTemporaryStatList() {
-    for (FileNodeManagerStatConstants constants : FileNodeManagerStatConstants.values()) {
-      temporaryStatList.add(constants.name());
-    }
-    for (FileNodeProcessorStatConstants constants : FileNodeProcessorStatConstants.values()) {
-      temporaryStatList.add(constants.name());
-    }
+//    for (FileNodeManagerStatConstants constants : FileNodeManagerStatConstants.values()) {
+//      temporaryStatList.add(constants.name());
+//    }
+//    for (RequestConstants constants : RequestConstants.values()) {
+//      temporaryStatList.add(constants.name());
+//    }
   }
 
   public static StatMonitor getInstance() {
@@ -136,18 +134,6 @@ public class StatMonitor implements IService {
 
   public long getNumInsertError() {
     return numInsertError.get();
-  }
-
-  void registerStatStorageGroup() {
-    MManager mManager = MManager.getInstance();
-    String prefix = MonitorConstants.STAT_STORAGE_GROUP_PREFIX;
-    try {
-      if (!mManager.pathExist(prefix)) {
-        mManager.setStorageLevelToMTree(prefix);
-      }
-    } catch (Exception e) {
-      logger.error("MManager cannot set storage level to MTree.", e);
-    }
   }
 
   /**

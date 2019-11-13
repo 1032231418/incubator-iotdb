@@ -40,7 +40,7 @@ public class MonitorConstants {
   public static final String FILE_SIZE_STORAGE_GROUP_NAME = STAT_STORAGE_GROUP_PREFIX
       + MONITOR_PATH_SEPARATOR + FILE_SIZE;
   // statistic for insert module
-  static final String FILE_NODE_MANAGER_PATH = "write.global";
+  private static final String FILE_NODE_MANAGER_PATH = "write.global";
   public static final String FILE_NODE_PATH = "write";
   /**
    * Stat information.
@@ -58,7 +58,7 @@ public class MonitorConstants {
     HashMap<String, AtomicLong> hashMap = new HashMap<>();
     switch (constantsType) {
       case FILENODE_PROCESSOR_CONST:
-        for (FileNodeProcessorStatConstants statConstant : FileNodeProcessorStatConstants
+        for (RequestConstants statConstant : RequestConstants
             .values()) {
           hashMap.put(statConstant.name(), new AtomicLong(0));
         }
@@ -79,11 +79,11 @@ public class MonitorConstants {
   }
 
   public enum FileNodeManagerStatConstants {
-    TOTAL_POINTS, TOTAL_REQ_SUCCESS, TOTAL_REQ_FAIL, TOTAL_POINTS_SUCCESS, TOTAL_POINTS_FAIL
+    TOTAL_POINTS_SUCCESS, TOTAL_POINTS_FAIL
   }
 
-  public enum FileNodeProcessorStatConstants {
-    TOTAL_REQ_SUCCESS, TOTAL_REQ_FAIL, TOTAL_POINTS_SUCCESS, TOTAL_POINTS_FAIL
+  public enum RequestConstants {
+    TOTAL_REQ_SUCCESS, TOTAL_REQ_FAIL
   }
 
   public enum OsStatConstants {

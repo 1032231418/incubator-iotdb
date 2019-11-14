@@ -502,6 +502,7 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext, IStatisti
 
   @Override
   public TSExecuteStatementResp executeStatement(TSExecuteStatementReq req) {
+    totalRequestNum.incrementAndGet();
     try {
       if (!checkLogin()) {
         logger.info(INFO_NOT_LOGIN, IoTDBConstant.GLOBAL_DB_NAME);
@@ -554,6 +555,7 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext, IStatisti
   @Override
   public TSExecuteStatementResp executeQueryStatement(TSExecuteStatementReq req) {
     long t1 = System.currentTimeMillis();
+    totalRequestNum.incrementAndGet();
     try {
       if (!checkLogin()) {
         logger.info(INFO_NOT_LOGIN, IoTDBConstant.GLOBAL_DB_NAME);
@@ -743,6 +745,7 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext, IStatisti
 
   @Override
   public TSExecuteStatementResp executeUpdateStatement(TSExecuteStatementReq req) {
+    totalRequestNum.incrementAndGet();
     try {
       if (!checkLogin()) {
         return getTSExecuteStatementResp(TS_StatusCode.ERROR_STATUS, ERROR_NOT_LOGIN);
@@ -919,6 +922,7 @@ public class TSServiceImpl implements TSIService.Iface, ServerContext, IStatisti
 
   @Override
   public TSExecuteStatementResp executeInsertion(TSInsertionReq req) {
+    totalRequestNum.incrementAndGet();
     if (!checkLogin()) {
       logger.info(INFO_NOT_LOGIN, IoTDBConstant.GLOBAL_DB_NAME);
       return getTSExecuteStatementResp(TS_StatusCode.ERROR_STATUS, ERROR_NOT_LOGIN);

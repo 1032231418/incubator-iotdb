@@ -45,8 +45,8 @@ import org.slf4j.LoggerFactory;
 public class IoTDBDescriptor {
 
   private static final Logger logger = LoggerFactory.getLogger(IoTDBDescriptor.class);
-  private IoTDBConfig conf = new IoTDBConfig();
   private static CommandLine commandLine;
+  private IoTDBConfig conf = new IoTDBConfig();
 
   protected IoTDBDescriptor() {
     loadProps();
@@ -90,6 +90,10 @@ public class IoTDBDescriptor {
     return true;
   }
 
+  /**
+   * get props url location
+   * @return url object if location exit, otherwise null.
+   */
   public URL getPropsUrl() {
     // Check if a config-directory was specified first.
     String urlString = System.getProperty(IoTDBConstant.IOTDB_CONF, null);
@@ -151,29 +155,10 @@ public class IoTDBDescriptor {
       conf.setEnableStatMonitor(Boolean
           .parseBoolean(properties.getProperty("enable_stat_monitor",
               Boolean.toString(conf.isEnableStatMonitor()))));
-      conf.setBackLoopPeriodSec(Integer
-          .parseInt(properties.getProperty("back_loop_period_in_second",
-              Integer.toString(conf.getBackLoopPeriodSec()))));
-      int statMonitorDetectFreqSec = Integer.parseInt(
-          properties.getProperty("stat_monitor_detect_freq_in_second",
-              Integer.toString(conf.getStatMonitorDetectFreqSec())));
-      int statMonitorRetainIntervalSec = Integer.parseInt(
-          properties.getProperty("stat_monitor_retain_interval_in_second",
-              Integer.toString(conf.getStatMonitorRetainIntervalSec())));
-      // the conf value must > default value, or may cause system unstable
-      if (conf.getStatMonitorDetectFreqSec() < statMonitorDetectFreqSec) {
-        conf.setStatMonitorDetectFreqSec(statMonitorDetectFreqSec);
-      } else {
-        logger.info("The stat_monitor_detect_freq_sec value is smaller than default,"
-            + " use default value");
-      }
 
-      if (conf.getStatMonitorRetainIntervalSec() < statMonitorRetainIntervalSec) {
-        conf.setStatMonitorRetainIntervalSec(statMonitorRetainIntervalSec);
-      } else {
-        logger.info("The stat_monitor_retain_interval_sec value is smaller than default,"
-            + " use default value");
-      }
+      conf.setEnableMonitorSeriesWrite(Boolean
+          .parseBoolean(properties.getProperty("enable_monitor_series_write",
+              Boolean.toString(conf.isEnableStatMonitor()))));
 
       conf.setEnableMetricService(Boolean.parseBoolean(properties
           .getProperty("enable_metric_service", Boolean.toString(conf.isEnableMetricService()))));
@@ -191,6 +176,10 @@ public class IoTDBDescriptor {
       conf.setRpcThriftCompressionEnable(
           Boolean.parseBoolean(properties.getProperty("rpc_thrift_compression_enable",
               Boolean.toString(conf.isRpcThriftCompressionEnable()))));
+
+      conf.setRpcAdvancedCompressionEnable(
+          Boolean.parseBoolean(properties.getProperty("rpc_advanced_compression_enable",
+              Boolean.toString(conf.isRpcAdvancedCompressionEnable()))));
 
       conf.setRpcPort(Integer.parseInt(properties.getProperty("rpc_port",
           Integer.toString(conf.getRpcPort()))));
@@ -243,6 +232,8 @@ public class IoTDBDescriptor {
       conf.setQueryDir(
           FilePathUtils.regularizePath(conf.getSystemDir() + IoTDBConstant.QUERY_FOLDER_NAME));
 
+      conf.setTracingDir(properties.getProperty("tracing_dir", conf.getTracingDir()));
+
       conf.setDataDirs(properties.getProperty("data_dirs", conf.getDataDirs()[0])
           .split(","));
 
@@ -252,6 +243,12 @@ public class IoTDBDescriptor {
           Integer.toString(conf.getWalBufferSize())));
       if (walBufferSize > 0) {
         conf.setWalBufferSize(walBufferSize);
+      }
+
+      int mlogBufferSize = Integer.parseInt(properties.getProperty("mlog_buffer_size",
+          Integer.toString(conf.getMlogBufferSize())));
+      if (mlogBufferSize > 0) {
+        conf.setMlogBufferSize(mlogBufferSize);
       }
 
       conf.setMultiDirStrategyClassName(properties.getProperty("multi_dir_strategy",
@@ -283,9 +280,9 @@ public class IoTDBDescriptor {
           .getProperty("avg_series_point_number_threshold",
               Integer.toString(conf.getAvgSeriesPointNumberThreshold()))));
 
-      conf.setWaitingTimeWhenInsertBlocked(Integer.parseInt(properties
-          .getProperty("waiting_time_when_insert_blocked",
-              Integer.toString(conf.getWaitingTimeWhenInsertBlocked()))));
+      conf.setCheckPeriodWhenInsertBlocked(Integer.parseInt(properties
+          .getProperty("check_period_when_insert_blocked",
+              Integer.toString(conf.getCheckPeriodWhenInsertBlocked()))));
 
       conf.setMaxWaitingTimeWhenInsertBlocked(Integer.parseInt(properties
           .getProperty("max_waiting_time_when_insert_blocked",
@@ -294,6 +291,10 @@ public class IoTDBDescriptor {
       conf.setEstimatedSeriesSize(Integer.parseInt(properties
           .getProperty("estimated_series_size",
               Integer.toString(conf.getEstimatedSeriesSize()))));
+
+      conf.setIoTaskQueueSizeForFlushing(Integer.parseInt(properties
+          .getProperty("io_task_queue_size_for_flushing",
+              Integer.toString(conf.getIoTaskQueueSizeForFlushing()))));
 
       conf.setMergeChunkPointNumberThreshold(Integer.parseInt(properties
           .getProperty("merge_chunk_point_number",
@@ -326,6 +327,9 @@ public class IoTDBDescriptor {
       conf.setUnseqFileNumInEachLevel(Integer.parseInt(properties
           .getProperty("unseq_file_num_in_each_level",
               Integer.toString(conf.getUnseqFileNumInEachLevel()))));
+
+      conf.setQueryTimeThreshold(Integer.parseInt(properties
+          .getProperty("query_time_threshold", Integer.toString(conf.getQueryTimeThreshold()))));
 
       conf.setSyncEnable(Boolean
           .parseBoolean(properties.getProperty("is_sync_enable",
@@ -447,6 +451,7 @@ public class IoTDBDescriptor {
           .parseInt(properties.getProperty("performance_stat_memory_in_kb",
               Integer.toString(conf.getPerformanceStatMemoryInKB())).trim()));
 
+
       int maxConcurrentClientNum = Integer.parseInt(properties.
           getProperty("rpc_max_concurrent_client_num",
               Integer.toString(conf.getRpcMaxConcurrentClientNum()).trim()));
@@ -507,6 +512,9 @@ public class IoTDBDescriptor {
 //          Integer.parseInt(properties.getProperty("concurrent_writing_time_partition",
 //              String.valueOf(conf.getConcurrentWritingTimePartition()))));
 
+      conf.setTimeIndexLevel(
+          properties.getProperty("time_index_level", String.valueOf(conf.getTimeIndexLevel())));
+
       // the default fill interval in LinearFill and PreviousFill
       conf.setDefaultFillInterval(
           Integer.parseInt(properties.getProperty("default_fill_interval",
@@ -523,6 +531,10 @@ public class IoTDBDescriptor {
       conf.setThriftMaxFrameSize(Integer.parseInt(properties
           .getProperty("thrift_max_frame_size", String.valueOf(conf.getThriftMaxFrameSize()))));
 
+      if (conf.getThriftMaxFrameSize() < IoTDBConstant.LEFT_SIZE_IN_REQUEST * 2) {
+        conf.setThriftMaxFrameSize(IoTDBConstant.LEFT_SIZE_IN_REQUEST * 2);
+      }
+
       conf.setThriftInitBufferSize(Integer.parseInt(properties
           .getProperty("thrift_init_buffer_size", String.valueOf(conf.getThriftInitBufferSize()))));
 
@@ -535,6 +547,9 @@ public class IoTDBDescriptor {
 
       conf.setDebugState(Boolean.parseBoolean(properties
           .getProperty("debug_state", String.valueOf(conf.isDebugOn()))));
+      conf.setVirtualStorageGroupNum(Integer.parseInt(properties
+          .getProperty("virtual_storage_group_num",
+              String.valueOf(conf.getVirtualStorageGroupNum()))));
 
       // mqtt
       if (properties.getProperty(IoTDBConstant.MQTT_HOST_NAME) != null) {
@@ -564,6 +579,10 @@ public class IoTDBDescriptor {
           "org.apache.iotdb.db.auth.authorizer.LocalFileAuthorizer"));
       //if using org.apache.iotdb.db.auth.authorizer.OpenIdAuthorizer, openID_url is needed.
       conf.setOpenIdProviderUrl(properties.getProperty("openID_url", ""));
+
+      conf.setEnablePartition(Boolean.parseBoolean(properties.getProperty("enable_partition", conf.isEnablePartition() + "")));
+
+      conf.setPartitionInterval(Long.parseLong(properties.getProperty("partition_interval", conf.getPartitionInterval() + "")));
 
       // At the same time, set TSFileConfig
       TSFileDescriptor.getInstance().getConfig()
@@ -596,8 +615,12 @@ public class IoTDBDescriptor {
       TSFileDescriptor.getInstance().getConfig().setKerberosPrincipal(
           properties.getProperty("kerberos_principal", conf.getKerberosPrincipal()));
       TSFileDescriptor.getInstance().getConfig().setBatchSize(conf.getBatchSize());
+
       // set tsfile-format config
       loadTsFileProps(properties);
+
+      // UDF
+      loadUDFProps(properties);
 
     } catch (FileNotFoundException e) {
       logger.warn("Fail to find config file {}", url, e);
@@ -853,7 +876,48 @@ public class IoTDBDescriptor {
       conf.setMaxQueryDeduplicatedPathNum(
           Integer.parseInt(properties.getProperty("max_deduplicated_path_num")));
     }
+  }
 
+  @SuppressWarnings("squid:S3518") // "proportionSum" can't be zero
+  private void loadUDFProps(Properties properties) {
+    String initialByteArrayLengthForMemoryControl = properties
+        .getProperty("udf_initial_byte_array_length_for_memory_control");
+    if (initialByteArrayLengthForMemoryControl != null) {
+      conf.setUdfInitialByteArrayLengthForMemoryControl(
+          Integer.parseInt(initialByteArrayLengthForMemoryControl));
+    }
+
+    conf.setUdfDir(properties.getProperty("udf_root_dir", conf.getUdfDir()));
+
+    String memoryBudgetInMb = properties.getProperty("udf_memory_budget_in_mb");
+    if (memoryBudgetInMb != null) {
+      conf.setUdfMemoryBudgetInMB((float) Math
+          .min(Float.parseFloat(memoryBudgetInMb), 0.2 * conf.getAllocateMemoryForRead()));
+    }
+
+    String readerTransformerCollectorMemoryProportion = properties
+        .getProperty("udf_reader_transformer_collector_memory_proportion");
+    if (readerTransformerCollectorMemoryProportion != null) {
+      String[] proportions = readerTransformerCollectorMemoryProportion.split(":");
+      int proportionSum = 0;
+      for (String proportion : proportions) {
+        proportionSum += Integer.parseInt(proportion.trim());
+      }
+      float maxMemoryAvailable = conf.getUdfMemoryBudgetInMB();
+      try {
+        conf.setUdfReaderMemoryBudgetInMB(
+            maxMemoryAvailable * Integer.parseInt(proportions[0].trim()) / proportionSum);
+        conf.setUdfTransformerMemoryBudgetInMB(
+            maxMemoryAvailable * Integer.parseInt(proportions[1].trim()) / proportionSum);
+        conf.setUdfCollectorMemoryBudgetInMB(
+            maxMemoryAvailable * Integer.parseInt(proportions[2].trim()) / proportionSum);
+      } catch (Exception e) {
+        throw new RuntimeException(
+            "Each subsection of configuration item udf_reader_transformer_collector_memory_proportion"
+                + " should be an integer, which is "
+                + readerTransformerCollectorMemoryProportion);
+      }
+    }
   }
 
   /**

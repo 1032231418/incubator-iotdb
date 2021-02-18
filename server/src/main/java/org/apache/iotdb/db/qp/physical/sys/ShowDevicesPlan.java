@@ -20,16 +20,22 @@ package org.apache.iotdb.db.qp.physical.sys;
 
 import org.apache.iotdb.db.metadata.PartialPath;
 
-public class ShowDevicesPlan extends ShowPlan{
-  private PartialPath path;
+public class ShowDevicesPlan extends ShowPlan {
 
-  public ShowDevicesPlan(ShowContentType showContentType, PartialPath path) {
-    super(showContentType);
-    this.path = path;
+  private boolean hasSgCol;
+
+  public ShowDevicesPlan(PartialPath path) {
+    super(ShowContentType.DEVICES, path);
   }
 
-  public PartialPath getPath() {
-    return this.path;
+  public ShowDevicesPlan(PartialPath path, int limit, int offset,
+      int fetchSize, boolean hasSgCol) {
+    super(ShowContentType.DEVICES, path, limit, offset, fetchSize);
+    this.hasSgCol = hasSgCol;
+  }
+
+  public boolean hasSgCol() {
+    return hasSgCol;
   }
 }
 

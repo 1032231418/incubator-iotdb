@@ -29,6 +29,7 @@
 ![](https://img.shields.io/github/downloads/apache/iotdb/total.svg)
 ![](https://img.shields.io/badge/platform-win10%20%7C%20macox%20%7C%20linux-yellow.svg)
 ![](https://img.shields.io/badge/java--language-1.8-blue.svg)
+[![Language grade: Java](https://img.shields.io/lgtm/grade/java/g/apache/iotdb.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/apache/iotdb/context:java)
 [![IoTDB Website](https://img.shields.io/website-up-down-green-red/https/shields.io.svg?label=iotdb-website)](https://iotdb.apache.org/)
 [![Maven Version](https://maven-badges.herokuapp.com/maven-central/org.apache.iotdb/iotdb-parent/badge.svg)](http://search.maven.org/#search|gav|1|g:"org.apache.iotdb")
 [![Gitpod Ready-to-Code](https://img.shields.io/badge/Gitpod-Ready--to--Code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/apache/iotdb) 
@@ -72,14 +73,7 @@ For the latest information about IoTDB, please visit [IoTDB official website](ht
     - [Stop IoTDB](#stop-iotdb)
   - [Only build server](#only-build-server)
   - [Only build cli](#only-build-cli)
-  - [Usage of import-csv.sh](#usage-of-import-csvsh)
-    - [Create metadata](#create-metadata)
-    - [An example of import csv file](#an-example-of-import-csv-file)
-    - [Run import shell](#run-import-shell)
-    - [Error data file](#error-data-file)
-  - [Usage of export-csv.sh](#usage-of-export-csvsh)
-    - [Run export shell](#run-export-shell)
-    - [Input query](#input-query)
+  - [Usage of CSV Import and Export Tool](#usage-of-csv-import-and-export-tool)
 
 <!-- /TOC -->
 
@@ -107,6 +101,21 @@ IoTDB provides three installation methods, you can refer to the following sugges
 Here in the Quick Start, we give a brief introduction of using source code to install IoTDB. For further information, please refer to Chapter 3 of the User Guide.
 
 ## Build from source
+
+Skip this paragraph if you are using Windows. As we use Thrift for our RPC module (communication and
+protocol definition), we involve Thrift during the compilation, so Thrift compiler 0.13.0 (or
+higher) is required to generate Thrift Java code. Thrift officially provides binary compiler for
+Windows, but unfortunately, they do not provide that for Unix OSs. However, we compiled a Unix
+compiler ourselves and put it onto GitHub, and with the help of a maven plugin, it will be
+downloaded automatically during compilation. This compiler works fine with gcc8 or later, Ubuntu
+MacOS, and CentOS, but previous versions and other OSs are not guaranteed. Should you find your gcc
+version or OS does not support the precompiled compiler, please upgrade your gcc version or follow the
+Thrift official instructions to compile the compiler yourself and rename it into `{project_root}\thrift\target\tools\thrift_0.12.0_0.13.0_linux.exe`.
+If you have already installed a compatible Thrift compiler, you may add the following parameter
+when running Maven: `-Dthrift.download-url=http://apache.org/licenses/LICENSE-2.0.txt -Dthrift.exec.absolute.path=<YOUR LOCAL THRIFT BINARY FILE>`.
+If you want to download the Thrift compiler from another position, you may add the following
+parameter: `-Dthrift.download-url=<THE REMOTE URL FOR DOWNLOADING> -Dthrift.exec.absolute.path=<THE DOWNLOADED BINARY FILE NAME>`. Or you may directly modify our root pom if you are skilled enough.
+Here is the Thrift official site: https://thrift.apache.org/
 
 You can download the source code from:
 
@@ -333,59 +342,9 @@ Under the root path of iotdb:
 
 After being built, the IoTDB cli is located at the folder "cli/target/iotdb-cli-{project.version}".
 
-## Usage of import-csv.sh
+# Usage of CSV Import and Export Tool
 
-### Create metadata
-```
-SET STORAGE GROUP TO root.fit.d1;
-SET STORAGE GROUP TO root.fit.d2;
-SET STORAGE GROUP TO root.fit.p;
-CREATE TIMESERIES root.fit.d1.s1 WITH DATATYPE=INT32,ENCODING=RLE;
-CREATE TIMESERIES root.fit.d1.s2 WITH DATATYPE=TEXT,ENCODING=PLAIN;
-CREATE TIMESERIES root.fit.d2.s1 WITH DATATYPE=INT32,ENCODING=RLE;
-CREATE TIMESERIES root.fit.d2.s3 WITH DATATYPE=INT32,ENCODING=RLE;
-CREATE TIMESERIES root.fit.p.s1 WITH DATATYPE=INT32,ENCODING=RLE;
-```
-
-### An example of import csv file
-
-```
-Time,root.fit.d1.s1,root.fit.d1.s2,root.fit.d2.s1,root.fit.d2.s3,root.fit.p.s1
-1,100,'hello',200,300,400
-2,500,'world',600,700,800
-3,900,'IoTDB',1000,1100,1200
-```
-
-### Run import shell
-```
-# Unix/OS X
-> tools/import-csv.sh -h <ip> -p <port> -u <username> -pw <password> -f <xxx.csv>
-
-# Windows
-> tools\import-csv.bat -h <ip> -p <port> -u <username> -pw <password> -f <xxx.csv>
-```
-
-### Error data file
-
-`csvInsertError.error`
-
-## Usage of export-csv.sh
-
-### Run export shell
-```
-# Unix/OS X
-> tools/export-csv.sh -h <ip> -p <port> -u <username> -pw <password> -td <directory> [-tf <time-format>]
-
-# Windows
-> tools\export-csv.bat -h <ip> -p <port> -u <username> -pw <password> -td <directory> [-tf <time-format>]
-```
-
-### Input query
-
-```
-select * from root.fit.d1
-```
-
+see [Usage of CSV Import and Export Tool](https://iotdb.apache.org/UserGuide/Master/System%20Tools/CSV%20Tool.html)
 
 # Frequent Questions for Compiling
 see [Frequent Questions when Compiling the Source Code](https://iotdb.apache.org/Development/ContributeGuide.html#_Frequent-Questions-when-Compiling-the-Source-Code)

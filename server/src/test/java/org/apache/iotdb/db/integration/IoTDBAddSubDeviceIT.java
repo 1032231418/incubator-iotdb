@@ -32,10 +32,11 @@ import java.sql.ResultSetMetaData;
 import java.sql.Statement;
 import java.sql.Types;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+/**
+ * Test if measurement is also a sub device.
+ */
 public class IoTDBAddSubDeviceIT {
 
   private static String[] sqls = new String[]{
@@ -50,7 +51,6 @@ public class IoTDBAddSubDeviceIT {
     EnvironmentUtils.envSetUp();
 
     insertData();
-
   }
 
   @AfterClass
@@ -73,6 +73,46 @@ public class IoTDBAddSubDeviceIT {
   }
 
   @Test
+  public void showDevicesWithSg() throws ClassNotFoundException {
+    String[] retArray = new String[]{
+        "root.sg1.d1,root.sg1,",
+        "root.sg1.d1.s1,root.sg1,",
+    };
+
+    Class.forName(Config.JDBC_DRIVER_NAME);
+    try (Connection connection = DriverManager
+        .getConnection(Config.IOTDB_URL_PREFIX + "127.0.0.1:6667/", "root", "root");
+        Statement statement = connection.createStatement()) {
+      boolean hasResultSet = statement.execute("SHOW DEVICES WITH STORAGE GROUP");
+      Assert.assertTrue(hasResultSet);
+
+      try (ResultSet resultSet = statement.getResultSet()) {
+        ResultSetMetaData resultSetMetaData = resultSet.getMetaData();
+        StringBuilder header = new StringBuilder();
+        for (int i = 1; i <= resultSetMetaData.getColumnCount(); i++) {
+          header.append(resultSetMetaData.getColumnName(i)).append(",");
+        }
+        Assert.assertEquals("devices,storage group,", header.toString());
+        Assert.assertEquals(Types.VARCHAR, resultSetMetaData.getColumnType(1));
+
+        int cnt = 0;
+        while (resultSet.next()) {
+          StringBuilder builder = new StringBuilder();
+          for (int i = 1; i <= resultSetMetaData.getColumnCount(); i++) {
+            builder.append(resultSet.getString(i)).append(",");
+          }
+          Assert.assertEquals(retArray[cnt], builder.toString());
+          cnt++;
+        }
+        Assert.assertEquals(retArray.length, cnt);
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+      fail(e.getMessage());
+    }
+  }
+
+  @Test
   public void showDevices() throws ClassNotFoundException {
     String[] retArray = new String[]{
         "root.sg1.d1,",
@@ -83,8 +123,7 @@ public class IoTDBAddSubDeviceIT {
     try (Connection connection = DriverManager
         .getConnection(Config.IOTDB_URL_PREFIX + "127.0.0.1:6667/", "root", "root");
         Statement statement = connection.createStatement()) {
-      boolean hasResultSet = statement.execute(
-          "SHOW DEVICES");
+      boolean hasResultSet = statement.execute("SHOW DEVICES");
       Assert.assertTrue(hasResultSet);
 
       try (ResultSet resultSet = statement.getResultSet()) {
@@ -125,8 +164,7 @@ public class IoTDBAddSubDeviceIT {
     try (Connection connection = DriverManager
         .getConnection(Config.IOTDB_URL_PREFIX + "127.0.0.1:6667/", "root", "root");
         Statement statement = connection.createStatement()) {
-      boolean hasResultSet = statement.execute(
-          "SHOW TIMESERIES");
+      boolean hasResultSet = statement.execute("SHOW TIMESERIES");
       Assert.assertTrue(hasResultSet);
 
       try (ResultSet resultSet = statement.getResultSet()) {
@@ -135,7 +173,8 @@ public class IoTDBAddSubDeviceIT {
         for (int i = 1; i <= resultSetMetaData.getColumnCount(); i++) {
           header.append(resultSetMetaData.getColumnName(i)).append(",");
         }
-        Assert.assertEquals("timeseries,alias,storage group,dataType,encoding,compression,tags,attributes,",
+        Assert.assertEquals(
+            "timeseries,alias,storage group,dataType,encoding,compression,tags,attributes,",
             header.toString());
         Assert.assertEquals(Types.VARCHAR, resultSetMetaData.getColumnType(1));
 
@@ -170,8 +209,6 @@ public class IoTDBAddSubDeviceIT {
       statement.execute("INSERT INTO root.sg1.d1 (timestamp, s1) VALUES(0, 1)");
       statement.execute("INSERT INTO root.sg1.d1.s1 (timestamp, s1) VALUES(0, 2)");
       statement.execute("INSERT INTO root.sg1.d1.s1 (timestamp, s2) VALUES(0, 3)");
-
-      // assertEquals(1, statement.getUpdateCount());
 
       boolean hasResultSet = statement.execute(
           "SELECT * FROM root.sg1.d1");

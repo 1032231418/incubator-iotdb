@@ -18,6 +18,8 @@
  */
 package org.apache.iotdb.cli;
 
+import static org.apache.iotdb.cli.utils.IoTPrinter.println;
+
 import java.io.IOException;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -31,6 +33,7 @@ import org.apache.commons.cli.ParseException;
 import org.apache.iotdb.exception.ArgsErrorException;
 import org.apache.iotdb.jdbc.Config;
 import org.apache.iotdb.jdbc.IoTDBConnection;
+import org.apache.iotdb.rpc.RpcUtils;
 import org.apache.thrift.TException;
 
 /**
@@ -53,9 +56,6 @@ public class Cli extends AbstractCli {
     hf.setWidth(MAX_HELP_CONSOLE_WIDTH);
     commandLine = null;
 
-    String[] newArgs;
-    String[] newArgs2;
-
     if (args == null || args.length == 0) {
       println(
           "Require more params input, eg. ./start-cli.sh(start-cli.bat if Windows) "
@@ -65,8 +65,8 @@ public class Cli extends AbstractCli {
       return;
     }
     init();
-    newArgs = removePasswordArgs(args);
-    newArgs2 = processExecuteArgs(newArgs);
+    String[] newArgs = removePasswordArgs(args);
+    String[] newArgs2 = processExecuteArgs(newArgs);
     boolean continues = parseCommandLine(options, newArgs2, hf);
     if (!continues) {
       return;
@@ -87,7 +87,7 @@ public class Cli extends AbstractCli {
         Config.rpcThriftCompressionEnable = true;
       }
       if (commandLine.hasOption(ISO8601_ARGS)) {
-        setTimeFormat("long");
+        timeFormat = RpcUtils.setTimeFormat("long");
       }
       if (commandLine.hasOption(MAX_PRINT_ROW_COUNT_ARGS)) {
         setMaxDisplayNumber(commandLine.getOptionValue(MAX_PRINT_ROW_COUNT_ARGS));
@@ -108,18 +108,13 @@ public class Cli extends AbstractCli {
   }
 
   private static void serve() {
-    try (ConsoleReader reader = new ConsoleReader()) {
-      reader.setExpandEvents(false);
-
+    try {
       host = checkRequiredArg(HOST_ARGS, HOST_NAME, commandLine, false, host);
       port = checkRequiredArg(PORT_ARGS, PORT_NAME, commandLine, false, port);
       username = checkRequiredArg(USERNAME_ARGS, USERNAME_NAME, commandLine, true, null);
 
       password = commandLine.getOptionValue(PASSWORD_ARGS);
-      if (password == null) {
-        password = reader.readLine("please input your password:", '\0');
-      }
-      if (hasExecuteSQL) {
+      if (hasExecuteSQL && password != null) {
         try (IoTDBConnection connection = (IoTDBConnection) DriverManager
             .getConnection(Config.IOTDB_URL_PREFIX + host + ":" + port + "/", username, password)) {
           properties = connection.getServerProperties();
@@ -130,8 +125,13 @@ public class Cli extends AbstractCli {
           println(IOTDB_CLI_PREFIX + "> can't execute sql because" + e.getMessage());
         }
       }
-
-      receiveCommands(reader);
+      try (ConsoleReader reader = new ConsoleReader()) {
+        reader.setExpandEvents(false);
+        if (password == null) {
+          password = reader.readLine("please input your password:", '\0');
+        }
+        receiveCommands(reader);
+      }
     } catch (ArgsErrorException e) {
       println(IOTDB_CLI_PREFIX + "> input params error because" + e.getMessage());
     } catch (Exception e) {
@@ -145,7 +145,7 @@ public class Cli extends AbstractCli {
       String s;
       properties = connection.getServerProperties();
       AGGREGRATE_TIME_LIST.addAll(properties.getSupportedTimeAggregationOperations());
-      TIMESTAMP_PRECISION = properties.getTimestampPrecision();
+      timestampPrecision = properties.getTimestampPrecision();
 
       echoStarting();
       displayLogo(properties.getVersion());

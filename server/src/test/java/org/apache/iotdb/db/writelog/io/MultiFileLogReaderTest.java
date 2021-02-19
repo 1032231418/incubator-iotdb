@@ -25,6 +25,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.apache.commons.io.FileUtils;
+import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.exception.metadata.IllegalPathException;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.qp.physical.PhysicalPlan;
 import org.apache.iotdb.db.qp.physical.crud.DeletePlan;
 import org.apache.iotdb.tsfile.read.common.Path;
@@ -40,20 +43,21 @@ public class MultiFileLogReaderTest {
   private int fileNum = 3;
 
   @Before
-  public void setup() throws IOException {
+  public void setup() throws IOException, IllegalPathException {
     logFiles = new File[fileNum];
     fileLogs = new PhysicalPlan[fileNum][logsPerFile];
     for (int i = 0; i < fileNum; i++) {
       logFiles[i] = new File(i + ".log");
       for (int j = 0; j < logsPerFile; j++) {
-        fileLogs[i][j] = new DeletePlan(i * logsPerFile + j, new Path("path" + j));
+        fileLogs[i][j] = new DeletePlan(Long.MIN_VALUE, i * logsPerFile + j, new PartialPath("path" + j));
       }
 
       ByteBuffer buffer = ByteBuffer.allocate(64*1024);
       for (PhysicalPlan plan : fileLogs[i]) {
-        plan.serializeTo(buffer);
+        plan.serialize(buffer);
       }
-      ILogWriter writer = new LogWriter(logFiles[i]);
+      ILogWriter writer = new LogWriter(logFiles[i],
+        IoTDBDescriptor.getInstance().getConfig().getForceWalPeriodInMs() == 0);
       writer.write(buffer);
       writer.force();
       writer.close();

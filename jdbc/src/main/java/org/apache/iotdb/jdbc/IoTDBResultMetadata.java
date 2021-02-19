@@ -27,13 +27,15 @@ public class IoTDBResultMetadata implements ResultSetMetaData {
 
   private List<String> columnInfoList;
   private List<String> columnTypeList;
+  private boolean ignoreTimestamp;
 
   /**
    * Constructor of IoTDBResultMetadata.
    */
-  public IoTDBResultMetadata(List<String> columnInfoList, List<String> columnTypeList) {
+  public IoTDBResultMetadata(List<String> columnInfoList, List<String> columnTypeList, boolean ignoreTimestamp) {
     this.columnInfoList = columnInfoList;
     this.columnTypeList = columnTypeList;
+    this.ignoreTimestamp = ignoreTimestamp;
   }
 
   @Override
@@ -52,16 +54,31 @@ public class IoTDBResultMetadata implements ResultSetMetaData {
   }
 
   @Override
-  public String getColumnClassName(int arg0) throws SQLException {
-    throw new SQLException(Constant.METHOD_NOT_SUPPORTED);
+  public String getColumnClassName(int column) throws SQLException {
+    String columnTypeName = getColumnTypeName(column);
+    switch (columnTypeName) {
+      case "TIMESTAMP":
+      case "INT64":
+        return Long.class.getName();
+      case "BOOLEAN":
+        return Boolean.class.getName();
+      case "INT32":
+        return Integer.class.getName();
+      case "FLOAT":
+        return Float.class.getName();
+      case "DOUBLE":
+        return Double.class.getName();
+      case "TEXT":
+        return String.class.getName();
+      default:
+        break;
+    }
+    return null;
   }
 
   @Override
-  public int getColumnCount() throws SQLException {
-    if (columnInfoList == null || columnInfoList.isEmpty()) {
-      throw new SQLException("No column exists");
-    }
-    return columnInfoList.size();
+  public int getColumnCount() {
+    return columnInfoList == null ? 0 : columnInfoList.size();
   }
 
   @Override
@@ -95,11 +112,16 @@ public class IoTDBResultMetadata implements ResultSetMetaData {
   @Override
   public int getColumnType(int column) throws SQLException {
     checkColumnIndex(column);
-    if (column == 1) {
+    if (column == 1 && !ignoreTimestamp) {
       return Types.TIMESTAMP;
     }
     // BOOLEAN, INT32, INT64, FLOAT, DOUBLE, TEXT,
-    String columnType = columnTypeList.get(column - 2);
+    String columnType;
+    if(!ignoreTimestamp) {
+      columnType = columnTypeList.get(column - 2);
+    } else {
+      columnType = columnTypeList.get(column - 1);
+    }
     switch (columnType.toUpperCase()) {
       case "BOOLEAN":
         return Types.BOOLEAN;
@@ -120,8 +142,28 @@ public class IoTDBResultMetadata implements ResultSetMetaData {
   }
 
   @Override
-  public String getColumnTypeName(int arg0) throws SQLException {
-    throw new SQLException(Constant.METHOD_NOT_SUPPORTED);
+  public String getColumnTypeName(int column) throws SQLException {
+    checkColumnIndex(column);
+    if (column == 1 && !ignoreTimestamp) {
+      return "TIMESTAMP";
+    }
+    // BOOLEAN, INT32, INT64, FLOAT, DOUBLE, TEXT,
+    String columnType;
+    if (!ignoreTimestamp) {
+      columnType = columnTypeList.get(column - 2);
+    } else {
+      columnType = columnTypeList.get(column - 1);
+    }
+    String typeString = columnType.toUpperCase();
+    if (typeString.equals("BOOLEAN") ||
+        typeString.equals("INT32") ||
+        typeString.equals("INT64") ||
+        typeString.equals("FLOAT") ||
+        typeString.equals("DOUBLE") ||
+        typeString.equals("TEXT")) {
+      return typeString;
+    }
+    return null;
   }
 
   @Override

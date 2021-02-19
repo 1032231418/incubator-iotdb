@@ -28,8 +28,11 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+
+import org.apache.iotdb.db.constant.TestConstant;
 import org.apache.iotdb.db.engine.modification.Deletion;
 import org.apache.iotdb.db.engine.modification.Modification;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.junit.Test;
 
@@ -37,15 +40,14 @@ public class LocalTextModificationAccessorTest {
 
   @Test
   public void readMyWrite() {
-    String tempFileName = "mod.temp";
+    String tempFileName = TestConstant.BASE_OUTPUT_PATH.concat("mod.temp");
     Modification[] modifications = new Modification[]{
-        new Deletion(new Path("d1", "s1"), 1, 1),
-        new Deletion(new Path("d1", "s2"), 2, 2),
-        new Deletion(new Path("d1", "s3"), 3, 3),
-        new Deletion(new Path("d1", "s4"), 4, 4),
+        new Deletion(new PartialPath(new String[]{"d1","s1"}), 1, 1),
+        new Deletion(new PartialPath(new String[]{"d1", "s2"}), 2, 2),
+        new Deletion(new PartialPath(new String[]{"d1", "s3"}), 3, 3),
+        new Deletion(new PartialPath(new String[]{"d1", "s4"}), 4, 4),
     };
-    try {
-      LocalTextModificationAccessor accessor = new LocalTextModificationAccessor(tempFileName);
+    try (LocalTextModificationAccessor accessor = new LocalTextModificationAccessor(tempFileName)) {
       for (int i = 0; i < 2; i++) {
         accessor.write(modifications[i]);
       }
@@ -61,7 +63,6 @@ public class LocalTextModificationAccessorTest {
       for (int i = 0; i < 4; i++) {
         assertEquals(modifications[i], modificationList.get(i));
       }
-      accessor.close();
     } catch (IOException e) {
       fail(e.getMessage());
     } finally {
@@ -71,9 +72,8 @@ public class LocalTextModificationAccessorTest {
 
   @Test
   public void readNull() throws IOException {
-    String tempFileName = "mod.temp";
-    LocalTextModificationAccessor accessor;
-    accessor = new LocalTextModificationAccessor(tempFileName);
+    String tempFileName = TestConstant.BASE_OUTPUT_PATH.concat("mod.temp");
+    LocalTextModificationAccessor accessor = new LocalTextModificationAccessor(tempFileName);
     new File(tempFileName).delete();
     Collection<Modification> modifications = accessor.read();
     assertEquals(new ArrayList<>(), modifications);

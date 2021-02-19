@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.encoding.bitpacking.IntPacker;
-import org.apache.iotdb.tsfile.encoding.common.EndianType;
 import org.apache.iotdb.tsfile.exception.encoding.TsFileDecodingException;
 import org.apache.iotdb.tsfile.utils.ReadWriteForEncodingUtils;
 import org.slf4j.Logger;
@@ -51,8 +50,8 @@ public class IntRleDecoder extends RleDecoder {
    */
   private IntPacker packer;
 
-  public IntRleDecoder(EndianType endianType) {
-    super(endianType);
+  public IntRleDecoder() {
+    super();
     currentValue = 0;
   }
 
@@ -78,24 +77,22 @@ public class IntRleDecoder extends RleDecoder {
       try {
         readNext();
       } catch (IOException e) {
-        logger.error(
-            "tsfile-encoding IntRleDecoder: error occurs when reading all encoding number,"
-                + " length is {}, bit width is {}",
-            length, bitWidth, e);
+        logger.error("tsfile-encoding IntRleDecoder: error occurs when reading all encoding number,"
+            + " length is {}, bit width is {}", length, bitWidth, e);
       }
     }
     --currentCount;
     int result;
     switch (mode) {
-      case RLE:
-        result = currentValue;
-        break;
-      case BIT_PACKED:
-        result = currentBuffer[bitPackingNum - currentCount - 1];
-        break;
-      default:
-        throw new TsFileDecodingException(
-            String.format("tsfile-encoding IntRleDecoder: not a valid mode %s", mode));
+    case RLE:
+      result = currentValue;
+      break;
+    case BIT_PACKED:
+      result = currentBuffer[bitPackingNum - currentCount - 1];
+      break;
+    default:
+      throw new TsFileDecodingException(
+          String.format("tsfile-encoding IntRleDecoder: not a valid mode %s", mode));
     }
 
     if (!hasNextPackage()) {
@@ -111,8 +108,7 @@ public class IntRleDecoder extends RleDecoder {
 
   @Override
   protected void readNumberInRle() throws IOException {
-    currentValue = ReadWriteForEncodingUtils
-        .readIntLittleEndianPaddedOnBitWidth(byteCache, bitWidth);
+    currentValue = ReadWriteForEncodingUtils.readIntLittleEndianPaddedOnBitWidth(byteCache, bitWidth);
   }
 
   @Override

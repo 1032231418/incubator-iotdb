@@ -18,6 +18,30 @@
  */
 package org.apache.iotdb.spark.db;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.iotdb.db.auth.AuthException;
+import org.apache.iotdb.db.auth.authorizer.BasicAuthorizer;
+import org.apache.iotdb.db.auth.authorizer.IAuthorizer;
+import org.apache.iotdb.db.conf.IoTDBConfig;
+import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.conf.directories.DirectoryManager;
+import org.apache.iotdb.db.engine.StorageEngine;
+import org.apache.iotdb.db.engine.cache.ChunkMetadataCache;
+import org.apache.iotdb.db.engine.flush.FlushManager;
+import org.apache.iotdb.db.exception.StartupException;
+import org.apache.iotdb.db.exception.StorageEngineException;
+import org.apache.iotdb.db.monitor.StatMonitor;
+import org.apache.iotdb.db.query.context.QueryContext;
+import org.apache.iotdb.db.query.control.FileReaderManager;
+import org.apache.iotdb.db.query.control.QueryResourceManager;
+import org.apache.iotdb.db.service.IoTDB;
+import org.apache.iotdb.db.service.MetricsService;
+import org.apache.iotdb.db.writelog.manager.MultiFileLogNodeManager;
+import org.apache.iotdb.jdbc.Config;
+import org.junit.Assert;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.sql.Connection;
@@ -25,30 +49,6 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Locale;
-import org.apache.commons.io.FileUtils;
-import org.apache.iotdb.db.auth.AuthException;
-import org.apache.iotdb.db.auth.authorizer.IAuthorizer;
-import org.apache.iotdb.db.auth.authorizer.LocalFileAuthorizer;
-import org.apache.iotdb.db.conf.IoTDBConfig;
-import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.conf.adapter.IoTDBConfigDynamicAdapter;
-import org.apache.iotdb.db.conf.directories.DirectoryManager;
-import org.apache.iotdb.db.engine.StorageEngine;
-import org.apache.iotdb.db.engine.cache.DeviceMetaDataCache;
-import org.apache.iotdb.db.engine.cache.TsFileMetaDataCache;
-import org.apache.iotdb.db.engine.flush.FlushManager;
-import org.apache.iotdb.db.exception.StartupException;
-import org.apache.iotdb.db.exception.StorageEngineException;
-import org.apache.iotdb.db.metadata.MManager;
-import org.apache.iotdb.db.monitor.StatMonitor;
-import org.apache.iotdb.db.query.context.QueryContext;
-import org.apache.iotdb.db.query.control.FileReaderManager;
-import org.apache.iotdb.db.query.control.QueryResourceManager;
-import org.apache.iotdb.db.writelog.manager.MultiFileLogNodeManager;
-import org.apache.iotdb.jdbc.Config;
-import org.junit.Assert;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * <p>
@@ -56,6 +56,7 @@ import org.slf4j.LoggerFactory;
  * </p>
  */
 public class EnvironmentUtils {
+
   private static String[] creationSqls = new String[]{
       "SET STORAGE GROUP TO root.vehicle.d0",
       "SET STORAGE GROUP TO root.vehicle.d1",
@@ -91,18 +92,17 @@ public class EnvironmentUtils {
   private static IoTDBConfig config = IoTDBDescriptor.getInstance().getConfig();
   private static DirectoryManager directoryManager = DirectoryManager.getInstance();
 
-  public static long TEST_QUERY_JOB_ID = QueryResourceManager.getInstance().assignJobId();
+  public static long TEST_QUERY_JOB_ID = QueryResourceManager.getInstance()
+      .assignQueryId(true, 1024, 0);
   public static QueryContext TEST_QUERY_CONTEXT = new QueryContext(TEST_QUERY_JOB_ID);
 
   private static long oldTsFileThreshold = config.getTsFileSizeThreshold();
-
-  private static int oldMaxMemTableNumber = config.getMaxMemtableNumber();
 
   private static long oldGroupSizeInByte = config.getMemtableSizeThreshold();
 
   public static void cleanEnv() throws IOException, StorageEngineException {
 
-    QueryResourceManager.getInstance().endQueryForGivenJob(TEST_QUERY_JOB_ID);
+    QueryResourceManager.getInstance().endQuery(TEST_QUERY_JOB_ID);
 
     // clear opened file streams
     FileReaderManager.getInstance().closeAndRemoveAllOpenedReaders();
@@ -120,18 +120,16 @@ public class EnvironmentUtils {
     MultiFileLogNodeManager.getInstance().stop();
     // clean cache
     if (config.isMetaDataCacheEnable()) {
-      TsFileMetaDataCache.getInstance().clear();
-      DeviceMetaDataCache.getInstance().clear();
+      ChunkMetadataCache.getInstance().clear();
     }
     // close metadata
-    MManager.getInstance().clear();
+    IoTDB.metaManager.clear();
+    MetricsService.getInstance().stop();
     // delete all directory
     cleanAllDir();
 
-    config.setMaxMemtableNumber(oldMaxMemTableNumber);
     config.setTsFileSizeThreshold(oldTsFileThreshold);
     config.setMemtableSizeThreshold(oldGroupSizeInByte);
-    IoTDBConfigDynamicAdapter.getInstance().reset();
   }
 
   public static void cleanAllDir() throws IOException {
@@ -146,10 +144,7 @@ public class EnvironmentUtils {
     // delete system info
     cleanDir(config.getSystemDir());
     // delete wal
-    cleanDir(config.getWalFolder());
-    // delete index
-    cleanDir(config.getIndexFileDir());
-    cleanDir(config.getBaseDir());
+    cleanDir(config.getWalDir());
     // delete data files
     for (String dataDir : config.getDataDirs()) {
       cleanDir(dataDir);
@@ -161,28 +156,23 @@ public class EnvironmentUtils {
   }
 
   /**
-   * disable the system monitor</br>
-   * this function should be called before all code in the setup
+   * disable the system monitor</br> this function should be called before all code in the setup
    */
   public static void closeStatMonitor() {
     config.setEnableStatMonitor(false);
   }
 
   /**
-   * disable memory control</br>
-   * this function should be called before all code in the setup
+   * disable memory control</br> this function should be called before all code in the setup
    */
   public static void envSetUp() throws StartupException, IOException {
-    IoTDBDescriptor.getInstance().getConfig().setEnableParameterAdapter(false);
-    MManager.getInstance().init();
-    IoTDBConfigDynamicAdapter.getInstance().setInitialized(true);
-
+    IoTDB.metaManager.init();
     createAllDir();
     // disable the system monitor
     config.setEnableStatMonitor(false);
     IAuthorizer authorizer;
     try {
-      authorizer = LocalFileAuthorizer.getInstance();
+      authorizer = BasicAuthorizer.getInstance();
     } catch (AuthException e) {
       throw new StartupException(e);
     }
@@ -194,7 +184,7 @@ public class EnvironmentUtils {
     StorageEngine.getInstance().reset();
     MultiFileLogNodeManager.getInstance().start();
     FlushManager.getInstance().start();
-    TEST_QUERY_JOB_ID = QueryResourceManager.getInstance().assignJobId();
+    TEST_QUERY_JOB_ID = QueryResourceManager.getInstance().assignQueryId(true, 1024, 0);
     TEST_QUERY_CONTEXT = new QueryContext(TEST_QUERY_JOB_ID);
   }
 
@@ -210,11 +200,9 @@ public class EnvironmentUtils {
     // create storage group
     createDir(config.getSystemDir());
     // create wal
-    createDir(config.getWalFolder());
-    // create index
-    createDir(config.getIndexFileDir());
+    createDir(config.getWalDir());
     // create data
-    for (String dataDir: config.getDataDirs()) {
+    for (String dataDir : config.getDataDirs()) {
       createDir(dataDir);
     }
   }
@@ -241,35 +229,35 @@ public class EnvironmentUtils {
       // prepare BufferWrite file
       for (int i = 5000; i < 7000; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "true"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "true"));
       }
       statement.execute("flush");
       for (int i = 7500; i < 8500; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "false"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "false"));
       }
       statement.execute("flush");
       // prepare Unseq-File
       for (int i = 500; i < 1500; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "true"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "true"));
       }
       statement.execute("flush");
       for (int i = 3000; i < 6500; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "false"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "false"));
       }
       statement.execute("merge");
 
       // prepare BufferWrite cache
       for (int i = 9000; i < 10000; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "true"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "true"));
       }
       // prepare Overflow cache
       for (int i = 2000; i < 2500; i++) {
         statement.execute(String
-            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "\'" + i + "\'", "false"));
+            .format(Locale.ENGLISH, insertTemplate, i, i, i, (double) i, "'" + i + "'", "false"));
       }
 
     } catch (Exception e) {

@@ -18,27 +18,26 @@
  */
 package org.apache.iotdb.db.qp.physical.crud;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import org.apache.iotdb.db.exception.query.QueryProcessException;
-import org.apache.iotdb.db.qp.executor.IQueryProcessExecutor;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.qp.logical.Operator;
 import org.apache.iotdb.db.qp.physical.PhysicalPlan;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
-import org.apache.iotdb.tsfile.read.common.Path;
-import org.apache.iotdb.tsfile.read.expression.IExpression;
 
-public class QueryPlan extends PhysicalPlan {
+public abstract class QueryPlan extends PhysicalPlan {
 
-  private List<Path> paths = null;
-  private List<TSDataType> dataTypes = null;
-  private IExpression expression = null;
+  protected List<PartialPath> paths = null;
+  protected List<TSDataType> dataTypes = null;
+  private boolean alignByTime = true; // for disable align sql
 
-  private boolean isGroupByDevice = false; // for group by device sql
-  private List<String> measurementColumnList; // for group by device sql
-  private Map<String, Set<String>> measurementColumnsGroupByDevice; // for group by device sql
-  private Map<String, TSDataType> dataTypeConsistencyChecker; // for group by device sql
+  private int rowLimit = 0;
+  private int rowOffset = 0;
+
+  private boolean ascending = true;
+
+  private Map<String, Integer> pathToIndex = new HashMap<>();
 
   public QueryPlan() {
     super(true);
@@ -49,31 +48,13 @@ public class QueryPlan extends PhysicalPlan {
     super(isQuery, operatorType);
   }
 
-  /**
-   * Check if all paths exist.
-   */
-  public void checkPaths(IQueryProcessExecutor executor) throws QueryProcessException {
-    for (Path path : paths) {
-      if (!executor.judgePathExists(path)) {
-        throw new QueryProcessException("Path doesn't exist: " + path);
-      }
-    }
-  }
-
-  public IExpression getExpression() {
-    return expression;
-  }
-
-  public void setExpression(IExpression expression) {
-    this.expression = expression;
-  }
-
   @Override
-  public List<Path> getPaths() {
+  public List<PartialPath> getPaths() {
     return paths;
   }
 
-  public void setPaths(List<Path> paths) {
+  @Override
+  public void setPaths(List<PartialPath> paths) {
     this.paths = paths;
   }
 
@@ -85,37 +66,47 @@ public class QueryPlan extends PhysicalPlan {
     this.dataTypes = dataTypes;
   }
 
-  public boolean isGroupByDevice() {
-    return isGroupByDevice;
+  public int getRowLimit() {
+    return rowLimit;
   }
 
-  public void setGroupByDevice(boolean groupByDevice) {
-    isGroupByDevice = groupByDevice;
+  public void setRowLimit(int rowLimit) {
+    this.rowLimit = rowLimit;
   }
 
-  public void setMeasurementColumnList(List<String> measurementColumnList) {
-    this.measurementColumnList = measurementColumnList;
+  public int getRowOffset() {
+    return rowOffset;
   }
 
-  public List<String> getMeasurementColumnList() {
-    return measurementColumnList;
+  public void setRowOffset(int rowOffset) {
+    this.rowOffset = rowOffset;
   }
 
-  public void setMeasurementColumnsGroupByDevice(
-      Map<String, Set<String>> measurementColumnsGroupByDevice) {
-    this.measurementColumnsGroupByDevice = measurementColumnsGroupByDevice;
+  public boolean hasLimit() {
+    return rowLimit > 0;
   }
 
-  public Map<String, Set<String>> getMeasurementColumnsGroupByDevice() {
-    return measurementColumnsGroupByDevice;
+  public boolean isAlignByTime() {
+    return alignByTime;
   }
 
-  public void setDataTypeConsistencyChecker(
-      Map<String, TSDataType> dataTypeConsistencyChecker) {
-    this.dataTypeConsistencyChecker = dataTypeConsistencyChecker;
+  public void setAlignByTime(boolean align) {
+    alignByTime = align;
   }
 
-  public Map<String, TSDataType> getDataTypeConsistencyChecker() {
-    return dataTypeConsistencyChecker;
+  public void addPathToIndex(String columnName, Integer index) {
+    pathToIndex.put(columnName, index);
+  }
+
+  public Map<String, Integer> getPathToIndex() {
+    return pathToIndex;
+  }
+
+  public boolean isAscending() {
+    return ascending;
+  }
+
+  public void setAscending(boolean ascending) {
+    this.ascending = ascending;
   }
 }

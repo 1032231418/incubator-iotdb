@@ -1,15 +1,19 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
- * agreements.  See the NOTICE file distributed with this work for additional information regarding
- * copyright ownership.  The ASF licenses this file to you under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with the License.  You may obtain
- * a copy of the License at
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software distributed under the License
- * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
- * or implied.  See the License for the specific language governing permissions and limitations
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
  * under the License.
  */
 package org.apache.iotdb.db.sync.sender.transfer;
@@ -36,9 +40,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
@@ -46,6 +53,8 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.io.FileUtils;
 import org.apache.iotdb.db.concurrent.IoTDBThreadPoolFactory;
 import org.apache.iotdb.db.concurrent.ThreadName;
+import org.apache.iotdb.db.conf.IoTDBConfig;
+import org.apache.iotdb.db.conf.IoTDBConstant;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
 import org.apache.iotdb.db.engine.storagegroup.TsFileResource;
 import org.apache.iotdb.db.exception.SyncConnectionException;
@@ -60,11 +69,13 @@ import org.apache.iotdb.db.sync.sender.recover.ISyncSenderLogger;
 import org.apache.iotdb.db.sync.sender.recover.SyncSenderLogAnalyzer;
 import org.apache.iotdb.db.sync.sender.recover.SyncSenderLogger;
 import org.apache.iotdb.db.utils.SyncUtils;
-import org.apache.iotdb.service.sync.thrift.SyncStatus;
+import org.apache.iotdb.rpc.RpcTransportFactory;
+import org.apache.iotdb.service.sync.thrift.ConfirmInfo;
 import org.apache.iotdb.service.sync.thrift.SyncService;
-import org.apache.iotdb.tsfile.utils.BytesUtils;
+import org.apache.iotdb.service.sync.thrift.SyncStatus;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
@@ -78,7 +89,9 @@ public class SyncClient implements ISyncClient {
 
   private static SyncSenderConfig config = SyncSenderDescriptor.getInstance().getConfig();
 
-  private static final int BATCH_LINE = 1000;
+  private static final IoTDBConfig ioTDBConfig = IoTDBDescriptor.getInstance().getConfig();
+
+  private static final int TIMEOUT_MS = 1000;
 
   /**
    * When transferring schema information, it is a better choice to transfer only new schema
@@ -86,19 +99,23 @@ public class SyncClient implements ISyncClient {
    * location is recorded once after each synchronization task for the next synchronization task to
    * use.
    */
-  private int schemaFileLinePos;
+  private long schemaFilePos;
 
   private TTransport transport;
 
   private SyncService.Client serviceClient;
 
-  private Set<String> allSG;
+  //logicalSg -> <virtualSg, timeRangeId>
+  private Map<String, Map<Long, Set<Long>>> allSG;
 
-  private Map<String, Set<File>> toBeSyncedFilesMap;
+  //logicalSg -> <virtualSg, <timeRangeId, tsfiles>>
+  private Map<String, Map<Long, Map<Long, Set<File>>>> toBeSyncedFilesMap;
 
-  private Map<String, Set<File>> deletedFilesMap;
+  // logicalSg -> <virtualSg, <timeRangeId, tsfiles>>
+  private Map<String, Map<Long, Map<Long, Set<File>>>> deletedFilesMap;
 
-  private Map<String, Set<File>> lastLocalFilesMap;
+  // logicalSg -> <virtualSg, <timeRangeId, tsfiles>>
+  private Map<String, Map<Long, Map<Long, Set<File>>>> lastLocalFilesMap;
 
   /**
    * If true, sync is in execution.
@@ -135,32 +152,26 @@ public class SyncClient implements ISyncClient {
 
   @Override
   public void verifySingleton() throws IOException {
-    String[] dataDirs = IoTDBDescriptor.getInstance().getConfig().getDataDirs();
-    for (String dataDir : dataDirs) {
-      config.update(dataDir);
-      File lockFile = new File(config.getLockFilePath());
-      if (!lockFile.getParentFile().exists()) {
-        lockFile.getParentFile().mkdirs();
-      }
-      if (!lockFile.exists()) {
-        lockFile.createNewFile();
-      }
-      if (!lockInstance(config.getLockFilePath())) {
-        logger.error("Sync client is already running.");
-        System.exit(1);
-      }
+    File lockFile = getLockFile();
+    if (!lockFile.getParentFile().exists()) {
+      lockFile.getParentFile().mkdirs();
+    }
+    if (!lockFile.exists()) {
+      lockFile.createNewFile();
+    }
+    if (!lockInstance(lockFile)) {
+      logger.error("Sync client is already running.");
+      System.exit(1);
     }
   }
 
   /**
-   * Try to lock lockfile. if failed, it means that sync client has benn started.
+   * Try to lock lockfile. if failed, it means that sync client has been started.
    *
-   * @param lockFile path of lock file
+   * @param lockFile lock file
    */
-  private boolean lockInstance(final String lockFile) {
-    try {
-      final File file = new File(lockFile);
-      final RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
+  private boolean lockInstance(File lockFile) {
+    try (final RandomAccessFile randomAccessFile = new RandomAccessFile(lockFile, "rw")) {
       final FileLock fileLock = randomAccessFile.getChannel().tryLock();
       if (fileLock != null) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -202,7 +213,7 @@ public class SyncClient implements ISyncClient {
     executorService.scheduleWithFixedDelay(() -> {
       try {
         syncAll();
-      } catch (SyncConnectionException | IOException | TException e) {
+      } catch (Exception e) {
         logger.error("Sync failed", e);
       }
     }, SyncConstant.SYNC_PROCESS_DELAY, SyncConstant.SYNC_PROCESS_PERIOD, TimeUnit.SECONDS);
@@ -226,9 +237,9 @@ public class SyncClient implements ISyncClient {
     syncSchema();
 
     // 3. Sync all data
-    String[] dataDirs = IoTDBDescriptor.getInstance().getConfig().getDataDirs();
+    String[] dataDirs = ioTDBConfig.getDataDirs();
     logger.info("There are {} data dirs to be synced.", dataDirs.length);
-    for (int i = 0 ; i < dataDirs.length; i++) {
+    for (int i = 0; i < dataDirs.length; i++) {
       String dataDir = dataDirs[i];
       logger.info("Start to sync data in data dir {}, the process is {}/{}", dataDir, i + 1,
           dataDirs.length);
@@ -267,8 +278,17 @@ public class SyncClient implements ISyncClient {
 
   @Override
   public void establishConnection(String serverIp, int serverPort) throws SyncConnectionException {
-    transport = new TSocket(serverIp, serverPort);
-    TProtocol protocol = new TBinaryProtocol(transport);
+    RpcTransportFactory.setInitialBufferCapacity(ioTDBConfig.getThriftInitBufferSize());
+    RpcTransportFactory.setMaxLength(ioTDBConfig.getThriftMaxFrameSize());
+    transport = RpcTransportFactory.INSTANCE
+        .getTransport(new TSocket(serverIp, serverPort, TIMEOUT_MS));
+    TProtocol protocol;
+    if (ioTDBConfig.isRpcThriftCompressionEnable()) {
+      protocol = new TCompactProtocol(transport);
+    } else {
+      protocol = new TBinaryProtocol(transport);
+    }
+
     serviceClient = new SyncService.Client(protocol);
     try {
       if (!transport.isOpen()) {
@@ -282,9 +302,12 @@ public class SyncClient implements ISyncClient {
 
   @Override
   public void confirmIdentity() throws SyncConnectionException {
-    try (Socket socket = new Socket(config.getServerIp(), config.getServerPort())){
+    try (Socket socket = new Socket(config.getServerIp(), config.getServerPort())) {
+      ConfirmInfo info = new ConfirmInfo(socket.getLocalAddress().getHostAddress(),
+          getOrCreateUUID(getUuidFile()), ioTDBConfig.getPartitionInterval(),
+          IoTDBConstant.VERSION);
       SyncStatus status = serviceClient
-          .check(socket.getLocalAddress().getHostAddress(), getOrCreateUUID(config.getUuidPath()));
+          .check(info);
       if (status.code != SUCCESS_CODE) {
         throw new SyncConnectionException(
             "The receiver rejected the synchronization task because " + status.msg);
@@ -298,25 +321,24 @@ public class SyncClient implements ISyncClient {
   /**
    * UUID marks the identity of sender for receiver.
    */
-  private String getOrCreateUUID(String uuidPath) throws IOException {
-    File file = new File(uuidPath);
+  private String getOrCreateUUID(File uuidFile) throws IOException {
     String uuid;
-    if (!file.getParentFile().exists()) {
-      file.getParentFile().mkdirs();
+    if (!uuidFile.getParentFile().exists()) {
+      uuidFile.getParentFile().mkdirs();
     }
-    if (!file.exists()) {
-      try (FileOutputStream out = new FileOutputStream(file)) {
+    if (!uuidFile.exists()) {
+      try (FileOutputStream out = new FileOutputStream(uuidFile)) {
         uuid = generateUUID();
         out.write(uuid.getBytes());
       } catch (IOException e) {
-        logger.error("Cannot insert UUID to file {}", file.getPath());
+        logger.error("Cannot insert UUID to file {}", uuidFile.getPath());
         throw new IOException(e);
       }
     } else {
-      try (BufferedReader bf = new BufferedReader((new FileReader(uuidPath)))) {
+      try (BufferedReader bf = new BufferedReader((new FileReader(uuidFile.getAbsolutePath())))) {
         uuid = bf.readLine();
       } catch (IOException e) {
-        logger.error("Cannot read UUID from file{}", file.getPath());
+        logger.error("Cannot read UUID from file{}", uuidFile.getPath());
         throw new IOException(e);
       }
     }
@@ -349,49 +371,34 @@ public class SyncClient implements ISyncClient {
   }
 
   private boolean tryToSyncSchema() {
-    int schemaPos = readSyncSchemaPos(getSchemaPosFile());
+    schemaFilePos = readSyncSchemaPos(getSchemaPosFile());
 
-    // start to sync file data and get md5 of this file.
-    try (BufferedReader br = new BufferedReader(new FileReader(getSchemaLogFile()));
+    // start to sync file data and get digest of this file.
+    try (FileInputStream fis = new FileInputStream(getSchemaLogFile());
         ByteArrayOutputStream bos = new ByteArrayOutputStream(SyncConstant.DATA_CHUNK_SIZE)) {
-      schemaFileLinePos = 0;
-      while (schemaFileLinePos < schemaPos) {
-        br.readLine();
-        schemaFileLinePos++;
+      long skipNum = fis.skip(schemaFilePos);
+      if (skipNum != schemaFilePos) {
+        logger.warn(
+            "The schema file has been smaller when sync, please check whether the logic of schema persistence has changed!");
+        schemaFilePos = skipNum;
       }
       MessageDigest md = MessageDigest.getInstance(SyncConstant.MESSAGE_DIGIT_NAME);
-      String line;
-      int cntLine = 0;
-      while ((line = br.readLine()) != null) {
-        schemaFileLinePos++;
-        byte[] singleLineData = BytesUtils.stringToBytes(line);
-        bos.write(singleLineData);
-        bos.write("\r\n".getBytes());
-        if (cntLine++ == BATCH_LINE) {
-          md.update(bos.toByteArray());
-          ByteBuffer buffToSend = ByteBuffer.wrap(bos.toByteArray());
-          bos.reset();
-          SyncStatus status = serviceClient.syncData(buffToSend);
-          if (status.code != SUCCESS_CODE) {
-            logger.error("Receiver failed to receive metadata because {}, retry.", status.msg);
-            return false;
-          }
-          cntLine = 0;
-        }
-      }
-      if (bos.size() != 0) {
-        md.update(bos.toByteArray());
+      byte[] buffer = new byte[SyncConstant.DATA_CHUNK_SIZE];
+      int dataLength;
+      while ((dataLength = fis.read(buffer)) != -1) {
+        bos.write(buffer, 0, dataLength);
+        md.update(buffer, 0, dataLength);
         ByteBuffer buffToSend = ByteBuffer.wrap(bos.toByteArray());
-        bos.reset();
         SyncStatus status = serviceClient.syncData(buffToSend);
         if (status.code != SUCCESS_CODE) {
           logger.error("Receiver failed to receive metadata because {}, retry.", status.msg);
           return false;
         }
+        schemaFilePos += dataLength;
       }
 
-      // check md5
-      return checkMD5ForSchema(new BigInteger(1, md.digest()).toString(16));
+      // check digest
+      return checkDigestForSchema(new BigInteger(1, md.digest()).toString(16));
     } catch (NoSuchAlgorithmException | IOException | TException e) {
       logger.error("Can not finish transfer schema to receiver", e);
       return false;
@@ -399,16 +406,17 @@ public class SyncClient implements ISyncClient {
   }
 
   /**
-   * Check MD5 of schema to make sure that the receiver receives the schema correctly
+   * Check digest of schema to make sure that the receiver receives the schema correctly
    */
-  private boolean checkMD5ForSchema(String md5OfSender) throws TException {
-    SyncStatus status = serviceClient.checkDataMD5(md5OfSender);
-    if (status.code == SUCCESS_CODE && md5OfSender.equals(status.msg)) {
+  private boolean checkDigestForSchema(String digestOfSender) throws TException {
+    SyncStatus status = serviceClient.checkDataDigest(digestOfSender);
+    if (status.code == SUCCESS_CODE && digestOfSender.equals(status.msg)) {
       logger.info("Receiver has received schema successfully.");
       return true;
     } else {
       logger
-          .error("MD5 check of schema file {} failed, retry", getSchemaLogFile().getAbsoluteFile());
+          .error("Digest check of schema file {} failed, retry",
+              getSchemaLogFile().getAbsoluteFile());
       return false;
     }
   }
@@ -417,11 +425,16 @@ public class SyncClient implements ISyncClient {
     try {
       if (syncSchemaLogFile.exists()) {
         try (BufferedReader br = new BufferedReader(new FileReader(syncSchemaLogFile))) {
-          return Integer.parseInt(br.readLine());
+          String pos = br.readLine();
+          if (pos != null) {
+            return Integer.parseInt(pos);
+          }
         }
       }
     } catch (IOException e) {
       logger.error("Can not find file {}", syncSchemaLogFile.getAbsoluteFile(), e);
+    } catch (NumberFormatException e) {
+      logger.error("Sync schema pos is not valid", e);
     }
     return 0;
   }
@@ -432,24 +445,26 @@ public class SyncClient implements ISyncClient {
         syncSchemaLogFile.createNewFile();
       }
       try (BufferedWriter br = new BufferedWriter(new FileWriter(syncSchemaLogFile))) {
-        br.write(Integer.toString(schemaFileLinePos));
+        br.write(Long.toString(schemaFilePos));
       }
     } catch (IOException e) {
       logger.error("Can not find file {}", syncSchemaLogFile.getAbsoluteFile(), e);
     }
   }
 
+  @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
   @Override
   public void sync() throws IOException {
     try {
       syncStatus = true;
 
       List<String> storageGroups = config.getStorageGroupList();
-      for (String sgName : allSG) {
+      for (Entry<String, Map<Long, Set<Long>>> entry : allSG.entrySet()) {
+        String sgName = entry.getKey();
         if (!storageGroups.isEmpty() && !storageGroups.contains(sgName)) {
           continue;
         }
-        lastLocalFilesMap.putIfAbsent(sgName, new HashSet<>());
+        lastLocalFilesMap.putIfAbsent(sgName, new HashMap<>());
         syncLog = new SyncSenderLogger(getSyncLogFile());
         try {
           SyncStatus status = serviceClient.init(sgName);
@@ -459,11 +474,24 @@ public class SyncClient implements ISyncClient {
         } catch (TException | SyncConnectionException e) {
           throw new SyncConnectionException("Unable to connect to receiver", e);
         }
-        logger.info("Sync process starts to transfer data of storage group {}", sgName);
-        syncDeletedFilesNameInOneGroup(sgName,
-            deletedFilesMap.getOrDefault(sgName, new HashSet<>()));
+        logger.info(
+            "Sync process starts to transfer data of storage group {}, it has {} virtual storage groups.",
+            sgName, entry.getValue().size());
         try {
-          syncDataFilesInOneGroup(sgName, toBeSyncedFilesMap.getOrDefault(sgName, new HashSet<>()));
+          for (Entry<Long, Set<Long>> vgEntry : entry.getValue().entrySet()) {
+            lastLocalFilesMap.get(sgName).putIfAbsent(vgEntry.getKey(), new HashMap<>());
+            for (Long timeRangeId : vgEntry.getValue()) {
+              lastLocalFilesMap.get(sgName).get(vgEntry.getKey()).putIfAbsent(timeRangeId, new HashSet<>());
+              syncDeletedFilesNameInOneGroup(sgName, vgEntry.getKey(), timeRangeId,
+                deletedFilesMap.getOrDefault(sgName, Collections.emptyMap())
+                  .getOrDefault(vgEntry.getKey(), Collections.emptyMap())
+                  .getOrDefault(timeRangeId, Collections.emptySet()));
+              syncDataFilesInOneGroup(sgName, vgEntry.getKey(), timeRangeId,
+                toBeSyncedFilesMap.getOrDefault(sgName, Collections.emptyMap())
+                  .getOrDefault(vgEntry.getKey(), Collections.emptyMap())
+                  .getOrDefault(timeRangeId, Collections.emptySet()));
+            }
+          }
         } catch (SyncDeviceOwnerConflictException e) {
           deletedFilesMap.remove(sgName);
           toBeSyncedFilesMap.remove(sgName);
@@ -471,6 +499,8 @@ public class SyncClient implements ISyncClient {
           config.setStorageGroupList(storageGroups);
           logger.error("Skip the data files of the storage group {}", sgName, e);
         }
+        logger.info(
+            "Sync process finished the task to sync data of storage group {}.", sgName);
       }
 
     } catch (SyncConnectionException e) {
@@ -484,7 +514,8 @@ public class SyncClient implements ISyncClient {
   }
 
   @Override
-  public void syncDeletedFilesNameInOneGroup(String sgName, Set<File> deletedFilesName)
+  public void syncDeletedFilesNameInOneGroup(String sgName, Long vgId, Long timeRangeId,
+      Set<File> deletedFilesName)
       throws IOException {
     if (deletedFilesName.isEmpty()) {
       logger.info("There has no deleted files to be synced in storage group {}", sgName);
@@ -494,9 +525,9 @@ public class SyncClient implements ISyncClient {
     logger.info("Start to sync names of deleted files in storage group {}", sgName);
     for (File file : deletedFilesName) {
       try {
-        if (serviceClient.syncDeletedFileName(file.getName()).code == SUCCESS_CODE) {
-          logger.info("Receiver has received deleted file name {} successfully.", file.getName());
-          lastLocalFilesMap.get(sgName).remove(file);
+        if (serviceClient.syncDeletedFileName(getFileNameWithSG(file)).code == SUCCESS_CODE) {
+          logger.info("Receiver has received deleted file name {} successfully.", getFileNameWithSG(file));
+          lastLocalFilesMap.get(sgName).get(vgId).get(timeRangeId).remove(file);
           syncLog.finishSyncDeletedFileName(file);
         }
       } catch (TException e) {
@@ -507,7 +538,7 @@ public class SyncClient implements ISyncClient {
   }
 
   @Override
-  public void syncDataFilesInOneGroup(String sgName, Set<File> toBeSyncFiles)
+  public void syncDataFilesInOneGroup(String sgName, Long vgId, Long timeRangeId, Set<File> toBeSyncFiles)
       throws SyncConnectionException, IOException, SyncDeviceOwnerConflictException {
     if (toBeSyncFiles.isEmpty()) {
       logger.info("There has no new tsfiles to be synced in storage group {}", sgName);
@@ -523,7 +554,7 @@ public class SyncClient implements ISyncClient {
         // firstly sync .resource file, then sync tsfile
         syncSingleFile(new File(snapshotFile.getAbsolutePath() + TsFileResource.RESOURCE_SUFFIX));
         syncSingleFile(snapshotFile);
-        lastLocalFilesMap.get(sgName).add(tsfile);
+        lastLocalFilesMap.get(sgName).get(vgId).get(timeRangeId).add(tsfile);
         syncLog.finishSyncTsfile(tsfile);
         logger.info("Task of synchronization has completed {}/{}.", cnt, toBeSyncFiles.size());
       } catch (IOException e) {
@@ -559,12 +590,13 @@ public class SyncClient implements ISyncClient {
   /**
    * Transfer data of a tsfile to the receiver.
    */
+  @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
   private void syncSingleFile(File snapshotFile)
       throws SyncConnectionException, SyncDeviceOwnerConflictException {
     try {
       int retryCount = 0;
       MessageDigest md = MessageDigest.getInstance(SyncConstant.MESSAGE_DIGIT_NAME);
-      serviceClient.initSyncData(snapshotFile.getName());
+      serviceClient.initSyncData(getFileNameWithSG(snapshotFile));
       outer:
       while (true) {
         retryCount++;
@@ -584,7 +616,7 @@ public class SyncClient implements ISyncClient {
             ByteBuffer buffToSend = ByteBuffer.wrap(bos.toByteArray());
             bos.reset();
             SyncStatus status = serviceClient.syncData(buffToSend);
-            if(status.code == CONFLICT_CODE){
+            if (status.code == CONFLICT_CODE) {
               throw new SyncDeviceOwnerConflictException(status.msg);
             }
             if (status.code != SUCCESS_CODE) {
@@ -596,13 +628,13 @@ public class SyncClient implements ISyncClient {
         }
 
         // the file is sent successfully
-        String md5OfSender = (new BigInteger(1, md.digest())).toString(16);
-        SyncStatus status = serviceClient.checkDataMD5(md5OfSender);
-        if (status.code == SUCCESS_CODE && md5OfSender.equals(status.msg)) {
+        String digestOfSender = (new BigInteger(1, md.digest())).toString(16);
+        SyncStatus status = serviceClient.checkDataDigest(digestOfSender);
+        if (status.code == SUCCESS_CODE && digestOfSender.equals(status.msg)) {
           logger.info("Receiver has received {} successfully.", snapshotFile.getAbsoluteFile());
           break;
         } else {
-          logger.error("MD5 check of tsfile {} failed, retry", snapshotFile.getAbsoluteFile());
+          logger.error("Digest check of tsfile {} failed, retry", snapshotFile.getAbsoluteFile());
         }
       }
     } catch (IOException | TException | NoSuchAlgorithmException e) {
@@ -616,12 +648,16 @@ public class SyncClient implements ISyncClient {
 
     // 1. Write file list to currentLocalFile
     try (BufferedWriter bw = new BufferedWriter(new FileWriter(currentLocalFile))) {
-      for (Set<File> currentLocalFiles : lastLocalFilesMap.values()) {
-        for (File file : currentLocalFiles) {
-          bw.write(file.getAbsolutePath());
-          bw.newLine();
+      for (Map<Long, Map<Long, Set<File>>> vgCurrentLocalFiles : lastLocalFilesMap.values()) {
+        for (Map<Long, Set<File>> currentLocalFiles : vgCurrentLocalFiles.values()) {
+          for (Set<File> files : currentLocalFiles.values()) {
+            for (File file : files) {
+              bw.write(file.getAbsolutePath());
+              bw.newLine();
+            }
+            bw.flush();
+          }
         }
-        bw.flush();
       }
     } catch (IOException e) {
       logger.error("Can not clear sync log {}", lastLocalFile.getAbsoluteFile(), e);
@@ -644,12 +680,21 @@ public class SyncClient implements ISyncClient {
 
 
   private File getSchemaPosFile() {
-    return new File(config.getSenderFolderPath(), SyncConstant.SCHEMA_POS_FILE_NAME);
+    return new File(ioTDBConfig.getSyncDir(),
+        config.getSyncReceiverName() + File.separator + SyncConstant.SCHEMA_POS_FILE_NAME);
   }
 
   private File getSchemaLogFile() {
-    return new File(IoTDBDescriptor.getInstance().getConfig().getSchemaDir(),
-        MetadataConstant.METADATA_LOG);
+    return new File(ioTDBConfig.getSchemaDir(), MetadataConstant.METADATA_LOG);
+  }
+
+  private File getLockFile() {
+    return new File(ioTDBConfig.getSyncDir(),
+        config.getSyncReceiverName() + File.separator + SyncConstant.LOCK_FILE_NAME);
+  }
+
+  private File getUuidFile() {
+    return new File(ioTDBConfig.getSyncDir(), SyncConstant.UUID_FILE_NAME);
   }
 
   private static class InstanceHolder {
@@ -667,5 +712,12 @@ public class SyncClient implements ISyncClient {
 
   public void setConfig(SyncSenderConfig config) {
     SyncClient.config = config;
+  }
+
+  private String getFileNameWithSG(File file) {
+    return file.getParentFile().getParentFile().getParentFile().getName()
+      + File.separator + file.getParentFile().getParentFile().getName()
+      + File.separator + file.getParentFile().getName()
+      + File.separator + file.getName();
   }
 }

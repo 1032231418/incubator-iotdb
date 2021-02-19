@@ -18,40 +18,51 @@
  */
 package org.apache.iotdb.tsfile.read;
 
-import static org.apache.iotdb.tsfile.write.writer.TsFileIOWriter.magicStringBytes;
-
 import java.io.File;
 import java.io.IOException;
+import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.common.conf.TSFileDescriptor;
 import org.apache.iotdb.tsfile.compress.IUnCompressor;
-import org.apache.iotdb.tsfile.encoding.common.EndianType;
-import org.apache.iotdb.tsfile.exception.NotCompatibleException;
+import org.apache.iotdb.tsfile.encoding.decoder.Decoder;
 import org.apache.iotdb.tsfile.file.MetaMarker;
-import org.apache.iotdb.tsfile.file.footer.ChunkGroupFooter;
+import org.apache.iotdb.tsfile.file.header.ChunkGroupHeader;
 import org.apache.iotdb.tsfile.file.header.ChunkHeader;
 import org.apache.iotdb.tsfile.file.header.PageHeader;
-import org.apache.iotdb.tsfile.file.metadata.ChunkGroupMetaData;
-import org.apache.iotdb.tsfile.file.metadata.ChunkMetaData;
-import org.apache.iotdb.tsfile.file.metadata.TsDeviceMetadata;
-import org.apache.iotdb.tsfile.file.metadata.TsDeviceMetadataIndex;
-import org.apache.iotdb.tsfile.file.metadata.TsDigest;
-import org.apache.iotdb.tsfile.file.metadata.TsDigest.StatisticType;
-import org.apache.iotdb.tsfile.file.metadata.TsFileMetaData;
+import org.apache.iotdb.tsfile.file.metadata.ChunkGroupMetadata;
+import org.apache.iotdb.tsfile.file.metadata.ChunkMetadata;
+import org.apache.iotdb.tsfile.file.metadata.MetadataIndexEntry;
+import org.apache.iotdb.tsfile.file.metadata.MetadataIndexNode;
+import org.apache.iotdb.tsfile.file.metadata.TimeseriesMetadata;
+import org.apache.iotdb.tsfile.file.metadata.TsFileMetadata;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
+import org.apache.iotdb.tsfile.file.metadata.enums.MetadataIndexNodeType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 import org.apache.iotdb.tsfile.file.metadata.statistics.Statistics;
 import org.apache.iotdb.tsfile.fileSystem.FSFactoryProducer;
+import org.apache.iotdb.tsfile.read.common.BatchData;
 import org.apache.iotdb.tsfile.read.common.Chunk;
 import org.apache.iotdb.tsfile.read.common.Path;
+import org.apache.iotdb.tsfile.read.controller.MetadataQuerierByFileImpl;
 import org.apache.iotdb.tsfile.read.reader.TsFileInput;
+import org.apache.iotdb.tsfile.read.reader.page.PageReader;
+import org.apache.iotdb.tsfile.utils.BloomFilter;
+import org.apache.iotdb.tsfile.utils.Pair;
 import org.apache.iotdb.tsfile.utils.ReadWriteIOUtils;
 import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 import org.slf4j.Logger;
@@ -60,20 +71,21 @@ import org.slf4j.LoggerFactory;
 public class TsFileSequenceReader implements AutoCloseable {
 
   private static final Logger logger = LoggerFactory.getLogger(TsFileSequenceReader.class);
+  private static final Logger resourceLogger = LoggerFactory.getLogger("FileMonitor");
   protected static final TSFileConfig config = TSFileDescriptor.getInstance().getConfig();
-
+  private static final String METADATA_INDEX_NODE_DESERIALIZE_ERROR = "Something error happened while deserializing MetadataIndexNode of file {}";
   protected String file;
-  private TsFileInput tsFileInput;
-  private long fileMetadataPos;
-  private int fileMetadataSize;
+  protected TsFileInput tsFileInput;
+  protected long fileMetadataPos;
+  protected int fileMetadataSize;
   private ByteBuffer markerBuffer = ByteBuffer.allocate(Byte.BYTES);
-  private int totalChunkNum;
-  private TsFileMetaData tsFileMetaData;
-  private EndianType endianType = EndianType.BIG_ENDIAN;
-  private boolean isOldVersion = false;
-
-  private boolean cacheDeviceMetadata = false;
-  private Map<TsDeviceMetadataIndex, TsDeviceMetadata> deviceMetadataMap;
+  protected TsFileMetadata tsFileMetaData;
+  // device -> measurement -> TimeseriesMetadata
+  private Map<String, Map<String, TimeseriesMetadata>> cachedDeviceMetadata = new ConcurrentHashMap<>();
+  private static final ReadWriteLock cacheLock = new ReentrantReadWriteLock();
+  private boolean cacheDeviceMetadata;
+  private long minPlanIndex = Long.MAX_VALUE;
+  private long maxPlanIndex = Long.MIN_VALUE;
 
   /**
    * Create a file reader of the given file. The reader will read the tail of the file to get the
@@ -91,16 +103,15 @@ public class TsFileSequenceReader implements AutoCloseable {
   /**
    * construct function for TsFileSequenceReader.
    *
-   * @param file -given file name
+   * @param file             -given file name
    * @param loadMetadataSize -whether load meta data size
    */
   public TsFileSequenceReader(String file, boolean loadMetadataSize) throws IOException {
+    if (resourceLogger.isDebugEnabled()) {
+      resourceLogger.debug("{} reader is opened. {}", file, getClass().getName());
+    }
     this.file = file;
     tsFileInput = FSFactoryProducer.getFileInputFactory().getTsFileInput(file);
-    // old version number of TsFile using little endian starts with "v"
-    this.endianType = this.readVersionNumber().startsWith("v")
-        ? EndianType.LITTLE_ENDIAN : EndianType.BIG_ENDIAN;
-    this.isOldVersion = this.readVersionNumber().startsWith("v");
     try {
       if (loadMetadataSize) {
         loadMetadataSize();
@@ -111,13 +122,11 @@ public class TsFileSequenceReader implements AutoCloseable {
     }
   }
 
+  // used in merge resource
   public TsFileSequenceReader(String file, boolean loadMetadata, boolean cacheDeviceMetadata)
       throws IOException {
     this(file, loadMetadata);
     this.cacheDeviceMetadata = cacheDeviceMetadata;
-    if (cacheDeviceMetadata) {
-      deviceMetadataMap = new HashMap<>();
-    }
   }
 
   /**
@@ -135,11 +144,10 @@ public class TsFileSequenceReader implements AutoCloseable {
   /**
    * construct function for TsFileSequenceReader.
    *
-   * @param input -given input
+   * @param input            -given input
    * @param loadMetadataSize -load meta data size
    */
-  public TsFileSequenceReader(TsFileInput input, boolean loadMetadataSize)
-      throws IOException {
+  public TsFileSequenceReader(TsFileInput input, boolean loadMetadataSize) throws IOException {
     this.tsFileInput = input;
     try {
       if (loadMetadataSize) { // NOTE no autoRepair here
@@ -154,10 +162,10 @@ public class TsFileSequenceReader implements AutoCloseable {
   /**
    * construct function for TsFileSequenceReader.
    *
-   * @param input the input of a tsfile. The current position should be a markder and then a chunk
-   * Header, rather than the magic number
-   * @param fileMetadataPos the position of the file metadata in the TsFileInput from the beginning
-   * of the input to the current position
+   * @param input            the input of a tsfile. The current position should be a marker and then
+   *                         a chunk Header, rather than the magic number
+   * @param fileMetadataPos  the position of the file metadata in the TsFileInput from the beginning
+   *                         of the input to the current position
    * @param fileMetadataSize the byte size of the file metadata in the input
    */
   public TsFileSequenceReader(TsFileInput input, long fileMetadataPos, int fileMetadataSize) {
@@ -174,18 +182,8 @@ public class TsFileSequenceReader implements AutoCloseable {
       metadataSize.flip();
       // read file metadata size and position
       fileMetadataSize = ReadWriteIOUtils.readInt(metadataSize);
-      fileMetadataPos =
-          tsFileInput.size() - TSFileConfig.MAGIC_STRING.getBytes().length - Integer.BYTES
-              - fileMetadataSize;
-    } else if (readTailMagic().equals(TSFileConfig.OLD_VERSION)) {
-      tsFileInput.read(metadataSize,
-          tsFileInput.size() - TSFileConfig.OLD_MAGIC_STRING.getBytes().length - Integer.BYTES);
-      metadataSize.flip();
-      // read file metadata size and position
-      fileMetadataSize = ReadWriteIOUtils.readInt(metadataSize);
-      fileMetadataPos =
-          tsFileInput.size() - TSFileConfig.OLD_MAGIC_STRING.getBytes().length - Integer.BYTES
-              - fileMetadataSize;
+      fileMetadataPos = tsFileInput.size() - TSFileConfig.MAGIC_STRING.getBytes().length
+          - Integer.BYTES - fileMetadataSize;
     }
   }
 
@@ -202,7 +200,8 @@ public class TsFileSequenceReader implements AutoCloseable {
    */
   public String readTailMagic() throws IOException {
     long totalSize = tsFileInput.size();
-    ByteBuffer magicStringBytes = ByteBuffer.allocate(TSFileConfig.MAGIC_STRING.getBytes().length);
+    ByteBuffer magicStringBytes = ByteBuffer
+        .allocate(TSFileConfig.MAGIC_STRING.getBytes().length);
     tsFileInput.read(magicStringBytes, totalSize - TSFileConfig.MAGIC_STRING.getBytes().length);
     magicStringBytes.flip();
     return new String(magicStringBytes.array());
@@ -212,32 +211,25 @@ public class TsFileSequenceReader implements AutoCloseable {
    * whether the file is a complete TsFile: only if the head magic and tail magic string exists.
    */
   public boolean isComplete() throws IOException {
-    return tsFileInput.size()
-        >= TSFileConfig.MAGIC_STRING.getBytes().length * 2 + TSFileConfig.VERSION_NUMBER.getBytes().length &&
-        (readTailMagic().equals(readHeadMagic()) || readTailMagic().equals(TSFileConfig.OLD_VERSION));
+    long size = tsFileInput.size();
+    // TSFileConfig.MAGIC_STRING.getBytes().length * 2 for two magic string
+    // Byte.BYTES for the file version number
+    if (size >= TSFileConfig.MAGIC_STRING.getBytes().length * 2 + Byte.BYTES) {
+      String tailMagic = readTailMagic();
+      String headMagic = readHeadMagic();
+      return tailMagic.equals(headMagic);
+    } else {
+      return false;
+    }
   }
 
   /**
    * this function does not modify the position of the file reader.
    */
   public String readHeadMagic() throws IOException {
-    return readHeadMagic(false);
-  }
-
-  /**
-   * this function does not modify the position of the file reader.
-   *
-   * @param movePosition whether move the position of the file reader after reading the magic header
-   * to the end of the magic head string.
-   */
-  public String readHeadMagic(boolean movePosition) throws IOException {
-    ByteBuffer magicStringBytes = ByteBuffer.allocate(TSFileConfig.MAGIC_STRING.getBytes().length);
-    if (movePosition) {
-      tsFileInput.position(0);
-      tsFileInput.read(magicStringBytes);
-    } else {
-      tsFileInput.read(magicStringBytes, 0);
-    }
+    ByteBuffer magicStringBytes = ByteBuffer
+        .allocate(TSFileConfig.MAGIC_STRING.getBytes().length);
+    tsFileInput.read(magicStringBytes, 0);
     magicStringBytes.flip();
     return new String(magicStringBytes.array());
   }
@@ -245,83 +237,507 @@ public class TsFileSequenceReader implements AutoCloseable {
   /**
    * this function reads version number and checks compatibility of TsFile.
    */
-  public String readVersionNumber() throws IOException, NotCompatibleException {
-    ByteBuffer versionNumberBytes = ByteBuffer
-        .allocate(TSFileConfig.VERSION_NUMBER.getBytes().length);
-    tsFileInput.read(versionNumberBytes, TSFileConfig.MAGIC_STRING.getBytes().length);
-    versionNumberBytes.flip();
-    return new String(versionNumberBytes.array());
-  }
-
-  public EndianType getEndianType() {
-    return this.endianType;
+  public byte readVersionNumber() throws IOException {
+    ByteBuffer versionNumberByte = ByteBuffer.allocate(Byte.BYTES);
+    tsFileInput.read(versionNumberByte, TSFileConfig.MAGIC_STRING.getBytes().length);
+    versionNumberByte.flip();
+    return versionNumberByte.get();
   }
 
   /**
    * this function does not modify the position of the file reader.
+   *
+   * @throws IOException io error
    */
-  public TsFileMetaData readFileMetadata() throws IOException {
-    if (tsFileMetaData == null) {
-      tsFileMetaData = TsFileMetaData
-          .deserializeFrom(readData(fileMetadataPos, fileMetadataSize), isOldVersion);
-    }
-    if (isOldVersion) {
-      tsFileMetaData.setTotalChunkNum(countTotalChunkNum());
+  public TsFileMetadata readFileMetadata() throws IOException {
+    try {
+      if (tsFileMetaData == null) {
+        tsFileMetaData = TsFileMetadata
+            .deserializeFrom(readData(fileMetadataPos, fileMetadataSize));
+      }
+    } catch (BufferOverflowException e) {
+      logger.error("Something error happened while reading file metadata of file {}", file);
+      throw e;
     }
     return tsFileMetaData;
   }
 
   /**
-   * count total chunk num
-   */
-  private int countTotalChunkNum() throws IOException {
-    int count = 0;
-    for (TsDeviceMetadataIndex deviceIndex : tsFileMetaData.getDeviceMap().values()) {
-      TsDeviceMetadata deviceMetadata = readTsDeviceMetaData(deviceIndex);
-      for (ChunkGroupMetaData chunkGroupMetaData : deviceMetadata
-          .getChunkGroupMetaDataList()) {
-        count += chunkGroupMetaData.getChunkMetaDataList().size();
-      }
-    }
-    return count;
-  }
-
-  /**
-   * @return get the position after the last chunk group in the file
-   */
-  public long getPositionOfFirstDeviceMetaIndex() throws IOException {
-    TsFileMetaData metaData = readFileMetadata();
-    Optional<Long> data = metaData.getDeviceMap().values().stream()
-        .map(TsDeviceMetadataIndex::getOffset)
-        .min(Comparator.comparing(Long::valueOf));
-    if (data.isPresent()) {
-      return data.get();
-    } else {
-      //no real data
-      return TSFileConfig.MAGIC_STRING.getBytes().length + TSFileConfig.VERSION_NUMBER
-          .getBytes().length;
-    }
-  }
-
-  /**
    * this function does not modify the position of the file reader.
+   *
+   * @throws IOException io error
    */
-  public TsDeviceMetadata readTsDeviceMetaData(TsDeviceMetadataIndex index) throws IOException {
-    if (index == null) {
-      return null;
+  public BloomFilter readBloomFilter() throws IOException {
+    readFileMetadata();
+    return tsFileMetaData.getBloomFilter();
+  }
+
+  /**
+   * this function reads measurements and TimeseriesMetaDatas in given device Thread Safe
+   *
+   * @param device name
+   * @return the map measurementId -> TimeseriesMetaData in one device
+   * @throws IOException io error
+   */
+  public Map<String, TimeseriesMetadata> readDeviceMetadata(String device) throws IOException {
+    if (!cacheDeviceMetadata) {
+      return readDeviceMetadataFromDisk(device);
     }
-    TsDeviceMetadata deviceMetadata = null;
-    if (cacheDeviceMetadata) {
-      deviceMetadata = deviceMetadataMap.get(index);
-    }
-    if (deviceMetadata == null) {
-      deviceMetadata = TsDeviceMetadata.deserializeFrom(readData(index.getOffset()
-          , index.getLen()));
-      if (cacheDeviceMetadata) {
-        deviceMetadataMap.put(index, deviceMetadata);
+
+    cacheLock.readLock().lock();
+    try {
+      if (cachedDeviceMetadata.containsKey(device)) {
+        return cachedDeviceMetadata.get(device);
       }
+    } finally {
+      cacheLock.readLock().unlock();
+    }
+
+    cacheLock.writeLock().lock();
+    try {
+      if (cachedDeviceMetadata.containsKey(device)) {
+        return cachedDeviceMetadata.get(device);
+      }
+      readFileMetadata();
+      Map<String, TimeseriesMetadata> deviceMetadata = readDeviceMetadataFromDisk(device);
+      cachedDeviceMetadata.put(device, deviceMetadata);
+      return deviceMetadata;
+    } finally {
+      cacheLock.writeLock().unlock();
+    }
+  }
+
+  private Map<String, TimeseriesMetadata> readDeviceMetadataFromDisk(String device)
+      throws IOException {
+    readFileMetadata();
+    List<TimeseriesMetadata> timeseriesMetadataList = getDeviceTimeseriesMetadata(device);
+    Map<String, TimeseriesMetadata> deviceMetadata = new HashMap<>();
+    for (TimeseriesMetadata timeseriesMetadata : timeseriesMetadataList) {
+      deviceMetadata.put(timeseriesMetadata.getMeasurementId(), timeseriesMetadata);
     }
     return deviceMetadata;
+  }
+
+  public TimeseriesMetadata readTimeseriesMetadata(Path path) throws IOException {
+    readFileMetadata();
+    MetadataIndexNode deviceMetadataIndexNode = tsFileMetaData.getMetadataIndex();
+    Pair<MetadataIndexEntry, Long> metadataIndexPair = getMetadataAndEndOffset(
+        deviceMetadataIndexNode, path.getDevice(), true, true);
+    if (metadataIndexPair == null) {
+      return null;
+    }
+    ByteBuffer buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    MetadataIndexNode metadataIndexNode = deviceMetadataIndexNode;
+    if (!metadataIndexNode.getNodeType().equals(MetadataIndexNodeType.LEAF_MEASUREMENT)) {
+      try {
+        metadataIndexNode = MetadataIndexNode.deserializeFrom(buffer);
+      } catch (BufferOverflowException e) {
+        logger.error(METADATA_INDEX_NODE_DESERIALIZE_ERROR, file);
+        throw e;
+      }
+      metadataIndexPair = getMetadataAndEndOffset(metadataIndexNode,
+          path.getMeasurement(), false, false);
+    }
+    if (metadataIndexPair == null) {
+      return null;
+    }
+    List<TimeseriesMetadata> timeseriesMetadataList = new ArrayList<>();
+    buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    while (buffer.hasRemaining()) {
+      try {
+        timeseriesMetadataList.add(TimeseriesMetadata.deserializeFrom(buffer));
+      } catch (BufferOverflowException e) {
+        logger.error("Something error happened while deserializing TimeseriesMetadata of file {}",
+            file);
+        throw e;
+      }
+    }
+    // return null if path does not exist in the TsFile
+    int searchResult = binarySearchInTimeseriesMetadataList(timeseriesMetadataList,
+        path.getMeasurement());
+    return searchResult >= 0 ? timeseriesMetadataList.get(searchResult) : null;
+  }
+
+  /**
+   * Find the leaf node that contains path, return all the sensors in that leaf node which are also
+   * in allSensors set
+   */
+  public List<TimeseriesMetadata> readTimeseriesMetadata(Path path, Set<String> allSensors)
+      throws IOException {
+    readFileMetadata();
+    MetadataIndexNode deviceMetadataIndexNode = tsFileMetaData.getMetadataIndex();
+    Pair<MetadataIndexEntry, Long> metadataIndexPair = getMetadataAndEndOffset(
+        deviceMetadataIndexNode, path.getDevice(), true, true);
+    if (metadataIndexPair == null) {
+      return null;
+    }
+    ByteBuffer buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    MetadataIndexNode metadataIndexNode = deviceMetadataIndexNode;
+    if (!metadataIndexNode.getNodeType().equals(MetadataIndexNodeType.LEAF_MEASUREMENT)) {
+      try {
+        metadataIndexNode = MetadataIndexNode.deserializeFrom(buffer);
+      } catch (BufferOverflowException e) {
+        logger.error(METADATA_INDEX_NODE_DESERIALIZE_ERROR, file);
+        throw e;
+      }
+      metadataIndexPair = getMetadataAndEndOffset(metadataIndexNode,
+          path.getMeasurement(), false, false);
+    }
+    if (metadataIndexPair == null) {
+      return null;
+    }
+    List<TimeseriesMetadata> timeseriesMetadataList = new ArrayList<>();
+    buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    while (buffer.hasRemaining()) {
+      TimeseriesMetadata timeseriesMetadata;
+      try {
+        timeseriesMetadata = TimeseriesMetadata.deserializeFrom(buffer);
+      } catch (BufferOverflowException e) {
+        logger.error("Something error happened while deserializing TimeseriesMetadata of file {}",
+            file);
+        throw e;
+      }
+      if (allSensors.contains(timeseriesMetadata.getMeasurementId())) {
+        timeseriesMetadataList.add(timeseriesMetadata);
+      }
+    }
+    return timeseriesMetadataList;
+  }
+
+  public List<TimeseriesMetadata> readTimeseriesMetadata(String device, Set<String> measurements)
+      throws IOException {
+    readFileMetadata();
+    MetadataIndexNode deviceMetadataIndexNode = tsFileMetaData.getMetadataIndex();
+    Pair<MetadataIndexEntry, Long> metadataIndexPair = getMetadataAndEndOffset(
+        deviceMetadataIndexNode, device, true, false);
+    if (metadataIndexPair == null) {
+      return Collections.emptyList();
+    }
+    List<TimeseriesMetadata> resultTimeseriesMetadataList = new ArrayList<>();
+    List<String> measurementList = new ArrayList<>(measurements);
+    Set<String> measurementsHadFound = new HashSet<>();
+    for (int i = 0; i < measurementList.size(); i++) {
+      if (measurementsHadFound.contains(measurementList.get(i))) {
+        continue;
+      }
+      ByteBuffer buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+      Pair<MetadataIndexEntry, Long> measurementMetadataIndexPair = metadataIndexPair;
+      List<TimeseriesMetadata> timeseriesMetadataList = new ArrayList<>();
+      MetadataIndexNode metadataIndexNode = deviceMetadataIndexNode;
+      if (!metadataIndexNode.getNodeType().equals(MetadataIndexNodeType.LEAF_MEASUREMENT)) {
+        try {
+          metadataIndexNode = MetadataIndexNode.deserializeFrom(buffer);
+        } catch (BufferOverflowException e) {
+          logger.error(METADATA_INDEX_NODE_DESERIALIZE_ERROR, file);
+          throw e;
+        }
+        measurementMetadataIndexPair = getMetadataAndEndOffset(metadataIndexNode,
+            measurementList.get(i), false, false);
+      }
+      if (measurementMetadataIndexPair == null) {
+        return Collections.emptyList();
+      }
+      buffer = readData(measurementMetadataIndexPair.left.getOffset(),
+          measurementMetadataIndexPair.right);
+      while (buffer.hasRemaining()) {
+        try {
+          timeseriesMetadataList.add(TimeseriesMetadata.deserializeFrom(buffer));
+        } catch (BufferOverflowException e) {
+          logger.error("Something error happened while deserializing TimeseriesMetadata of file {}",
+              file);
+          throw e;
+        }
+      }
+      for (int j = i; j < measurementList.size(); j++) {
+        String current = measurementList.get(j);
+        if (!measurementsHadFound.contains(current)) {
+          int searchResult = binarySearchInTimeseriesMetadataList(timeseriesMetadataList, current);
+          if (searchResult >= 0) {
+            resultTimeseriesMetadataList.add(timeseriesMetadataList.get(searchResult));
+            measurementsHadFound.add(current);
+          }
+        }
+        if (measurementsHadFound.size() == measurements.size()) {
+          return resultTimeseriesMetadataList;
+        }
+      }
+    }
+    return resultTimeseriesMetadataList;
+  }
+
+  /**
+   * Traverse and read TimeseriesMetadata of specific measurements in one device. This method need
+   * to deserialize all TimeseriesMetadata and then judge, in order to avoid frequent I/O when the
+   * number of queried measurements is too large. Attention: This method is not used currently
+   *
+   * @param timeseriesMetadataList TimeseriesMetadata list, to store the result
+   * @param type                   MetadataIndexNode type
+   * @param metadataIndexPair      <MetadataIndexEntry, offset> pair
+   * @param measurements           measurements to be queried
+   * @throws IOException io error
+   */
+  private void traverseAndReadTimeseriesMetadataInOneDevice(
+      List<TimeseriesMetadata> timeseriesMetadataList, MetadataIndexNodeType type,
+      Pair<MetadataIndexEntry, Long> metadataIndexPair, Set<String> measurements)
+      throws IOException {
+    ByteBuffer buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    switch (type) {
+      case LEAF_DEVICE:
+      case INTERNAL_MEASUREMENT:
+        MetadataIndexNode metadataIndexNode = MetadataIndexNode.deserializeFrom(buffer);
+        int metadataIndexListSize = metadataIndexNode.getChildren().size();
+        for (int i = 0; i < metadataIndexListSize; i++) {
+          long endOffset = metadataIndexNode.getEndOffset();
+          if (i != metadataIndexListSize - 1) {
+            endOffset = metadataIndexNode.getChildren().get(i + 1).getOffset();
+          }
+          traverseAndReadTimeseriesMetadataInOneDevice(timeseriesMetadataList,
+              metadataIndexNode.getNodeType(),
+              new Pair<>(metadataIndexNode.getChildren().get(i), endOffset), measurements);
+        }
+        break;
+      case LEAF_MEASUREMENT:
+        while (buffer.hasRemaining()) {
+          TimeseriesMetadata timeseriesMetadata = TimeseriesMetadata.deserializeFrom(buffer);
+          if (measurements.contains(timeseriesMetadata.getMeasurementId())) {
+            timeseriesMetadataList.add(timeseriesMetadata);
+          }
+        }
+        break;
+      default:
+        throw new IOException("Failed to traverse and read TimeseriesMetadata in device: " +
+            metadataIndexPair.left.getName() + ". Wrong MetadataIndexEntry type.");
+    }
+  }
+
+  protected int binarySearchInTimeseriesMetadataList(
+      List<TimeseriesMetadata> timeseriesMetadataList, String key) {
+    int low = 0;
+    int high = timeseriesMetadataList.size() - 1;
+
+    while (low <= high) {
+      int mid = (low + high) >>> 1;
+      TimeseriesMetadata midVal = timeseriesMetadataList.get(mid);
+      int cmp = midVal.getMeasurementId().compareTo(key);
+
+      if (cmp < 0) {
+        low = mid + 1;
+      } else if (cmp > 0) {
+        high = mid - 1;
+      } else {
+        return mid; // key found
+      }
+    }
+    return -1;  // key not found
+  }
+
+  public List<String> getAllDevices() throws IOException {
+    if (tsFileMetaData == null) {
+      readFileMetadata();
+    }
+    return getAllDevices(tsFileMetaData.getMetadataIndex());
+  }
+
+  private List<String> getAllDevices(MetadataIndexNode metadataIndexNode) throws IOException {
+    List<String> deviceList = new ArrayList<>();
+    int metadataIndexListSize = metadataIndexNode.getChildren().size();
+
+    // if metadataIndexNode is LEAF_DEVICE, put all devices in node entry into the list
+    if (metadataIndexNode.getNodeType().equals(MetadataIndexNodeType.LEAF_DEVICE)) {
+      deviceList
+          .addAll(metadataIndexNode.getChildren().stream().map(MetadataIndexEntry::getName).collect(
+              Collectors.toList()));
+      return deviceList;
+    }
+
+    for (int i = 0; i < metadataIndexListSize; i++) {
+      long endOffset = metadataIndexNode.getEndOffset();
+      if (i != metadataIndexListSize - 1) {
+        endOffset = metadataIndexNode.getChildren().get(i + 1).getOffset();
+      }
+      ByteBuffer buffer = readData(metadataIndexNode.getChildren().get(i).getOffset(), endOffset);
+      MetadataIndexNode node = MetadataIndexNode.deserializeFrom(buffer);
+      if (node.getNodeType().equals(MetadataIndexNodeType.LEAF_DEVICE)) {
+        // if node in next level is LEAF_DEVICE, put all devices in node entry into the list
+        deviceList.addAll(node.getChildren().stream().map(MetadataIndexEntry::getName).collect(
+            Collectors.toList()));
+      } else {
+        // keep traversing
+        deviceList.addAll(getAllDevices(node));
+      }
+    }
+    return deviceList;
+  }
+
+  /**
+   * read all ChunkMetaDatas of given device
+   *
+   * @param device name
+   * @return measurement -> ChunkMetadata list
+   * @throws IOException io error
+   */
+  public Map<String, List<ChunkMetadata>> readChunkMetadataInDevice(String device)
+      throws IOException {
+    readFileMetadata();
+
+    long start = 0;
+    int size = 0;
+    List<TimeseriesMetadata> timeseriesMetadataMap = getDeviceTimeseriesMetadata(device);
+    if (timeseriesMetadataMap.isEmpty()) {
+      return new HashMap<>();
+    }
+    for (TimeseriesMetadata timeseriesMetadata : timeseriesMetadataMap) {
+      if (start == 0) {
+        start = timeseriesMetadata.getOffsetOfChunkMetaDataList();
+      }
+      size += timeseriesMetadata.getDataSizeOfChunkMetaDataList();
+    }
+    // read buffer of all ChunkMetadatas of this device
+    ByteBuffer buffer = readData(start, size);
+    Map<String, List<ChunkMetadata>> seriesMetadata = new HashMap<>();
+    int index = 0;
+    int curSize = timeseriesMetadataMap.get(index).getDataSizeOfChunkMetaDataList();
+    while (buffer.hasRemaining()) {
+      if (buffer.position() >= curSize) {
+        index++;
+        curSize += timeseriesMetadataMap.get(index).getDataSizeOfChunkMetaDataList();
+      }
+      ChunkMetadata chunkMetadata = ChunkMetadata
+          .deserializeFrom(buffer, timeseriesMetadataMap.get(index));
+      seriesMetadata.computeIfAbsent(chunkMetadata.getMeasurementUid(), key -> new ArrayList<>())
+          .add(chunkMetadata);
+    }
+
+    return seriesMetadata;
+  }
+
+  /**
+   * this function return all timeseries names in this file
+   *
+   * @return list of Paths
+   * @throws IOException io error
+   */
+  public List<Path> getAllPaths() throws IOException {
+    List<Path> paths = new ArrayList<>();
+    for (String device : getAllDevices()) {
+      Map<String, TimeseriesMetadata> timeseriesMetadataMap = readDeviceMetadata(device);
+      for (String measurementId : timeseriesMetadataMap.keySet()) {
+        paths.add(new Path(device, measurementId));
+      }
+    }
+    return paths;
+  }
+
+  /**
+   * Traverse the metadata index from MetadataIndexEntry to get TimeseriesMetadatas
+   *
+   * @param metadataIndex         MetadataIndexEntry
+   * @param buffer                byte buffer
+   * @param deviceId              String
+   * @param timeseriesMetadataMap map: deviceId -> timeseriesMetadata list
+   */
+  private void generateMetadataIndex(MetadataIndexEntry metadataIndex, ByteBuffer buffer,
+      String deviceId, MetadataIndexNodeType type,
+      Map<String, List<TimeseriesMetadata>> timeseriesMetadataMap) throws IOException {
+    try {
+      if (type.equals(MetadataIndexNodeType.LEAF_MEASUREMENT)) {
+        List<TimeseriesMetadata> timeseriesMetadataList = new ArrayList<>();
+        while (buffer.hasRemaining()) {
+          timeseriesMetadataList.add(TimeseriesMetadata.deserializeFrom(buffer));
+        }
+        timeseriesMetadataMap.computeIfAbsent(deviceId, k -> new ArrayList<>())
+            .addAll(timeseriesMetadataList);
+      } else {
+        deviceId = metadataIndex.getName();
+        MetadataIndexNode metadataIndexNode = MetadataIndexNode.deserializeFrom(buffer);
+        int metadataIndexListSize = metadataIndexNode.getChildren().size();
+        for (int i = 0; i < metadataIndexListSize; i++) {
+          long endOffset = metadataIndexNode.getEndOffset();
+          if (i != metadataIndexListSize - 1) {
+            endOffset = metadataIndexNode.getChildren().get(i + 1).getOffset();
+          }
+          ByteBuffer nextBuffer = readData(metadataIndexNode.getChildren().get(i).getOffset(),
+              endOffset);
+          generateMetadataIndex(metadataIndexNode.getChildren().get(i), nextBuffer, deviceId,
+              metadataIndexNode.getNodeType(), timeseriesMetadataMap);
+        }
+      }
+    } catch (BufferOverflowException e) {
+      logger.error("Something error happened while generating MetadataIndex of file {}", file);
+      throw e;
+    }
+  }
+
+  public Map<String, List<TimeseriesMetadata>> getAllTimeseriesMetadata() throws IOException {
+    if (tsFileMetaData == null) {
+      readFileMetadata();
+    }
+    Map<String, List<TimeseriesMetadata>> timeseriesMetadataMap = new HashMap<>();
+    MetadataIndexNode metadataIndexNode = tsFileMetaData.getMetadataIndex();
+    List<MetadataIndexEntry> metadataIndexEntryList = metadataIndexNode.getChildren();
+    for (int i = 0; i < metadataIndexEntryList.size(); i++) {
+      MetadataIndexEntry metadataIndexEntry = metadataIndexEntryList.get(i);
+      long endOffset = tsFileMetaData.getMetadataIndex().getEndOffset();
+      if (i != metadataIndexEntryList.size() - 1) {
+        endOffset = metadataIndexEntryList.get(i + 1).getOffset();
+      }
+      ByteBuffer buffer = readData(metadataIndexEntry.getOffset(), endOffset);
+      generateMetadataIndex(metadataIndexEntry, buffer, null,
+          metadataIndexNode.getNodeType(), timeseriesMetadataMap);
+    }
+    return timeseriesMetadataMap;
+  }
+
+  private List<TimeseriesMetadata> getDeviceTimeseriesMetadata(String device) throws IOException {
+    MetadataIndexNode metadataIndexNode = tsFileMetaData.getMetadataIndex();
+    Pair<MetadataIndexEntry, Long> metadataIndexPair = getMetadataAndEndOffset(
+        metadataIndexNode, device, true, true);
+    if (metadataIndexPair == null) {
+      return Collections.emptyList();
+    }
+    ByteBuffer buffer = readData(metadataIndexPair.left.getOffset(), metadataIndexPair.right);
+    Map<String, List<TimeseriesMetadata>> timeseriesMetadataMap = new TreeMap<>();
+    generateMetadataIndex(metadataIndexPair.left, buffer, device,
+        MetadataIndexNodeType.INTERNAL_MEASUREMENT, timeseriesMetadataMap);
+    List<TimeseriesMetadata> deviceTimeseriesMetadata = new ArrayList<>();
+    for (List<TimeseriesMetadata> timeseriesMetadataList : timeseriesMetadataMap.values()) {
+      deviceTimeseriesMetadata.addAll(timeseriesMetadataList);
+    }
+    return deviceTimeseriesMetadata;
+  }
+
+  /**
+   * Get target MetadataIndexEntry and its end offset
+   *
+   * @param metadataIndex given MetadataIndexNode
+   * @param name          target device / measurement name
+   * @param isDeviceLevel whether target MetadataIndexNode is device level
+   * @param exactSearch   whether is in exact search mode, return null when there is no entry with
+   *                      name; or else return the nearest MetadataIndexEntry before it (for deeper
+   *                      search)
+   * @return target MetadataIndexEntry, endOffset pair
+   */
+  protected Pair<MetadataIndexEntry, Long> getMetadataAndEndOffset(MetadataIndexNode metadataIndex,
+      String name, boolean isDeviceLevel, boolean exactSearch) throws IOException {
+    try {
+      // When searching for a device node, return when it is not INTERNAL_DEVICE
+      // When searching for a measurement node, return when it is not INTERNAL_MEASUREMENT
+      if ((isDeviceLevel && !metadataIndex.getNodeType().equals(
+          MetadataIndexNodeType.INTERNAL_DEVICE)) ||
+          (!isDeviceLevel && !metadataIndex.getNodeType().equals(
+              MetadataIndexNodeType.INTERNAL_MEASUREMENT))) {
+        return metadataIndex.getChildIndexEntry(name, exactSearch);
+      } else {
+        Pair<MetadataIndexEntry, Long> childIndexEntry = metadataIndex
+            .getChildIndexEntry(name, false);
+        ByteBuffer buffer = readData(childIndexEntry.left.getOffset(), childIndexEntry.right);
+        return getMetadataAndEndOffset(MetadataIndexNode.deserializeFrom(buffer), name, isDeviceLevel,
+            false);
+      }
+    } catch (BufferOverflowException e) {
+      logger.error("Something error happened while deserializing MetadataIndex of file {}", file);
+      throw e;
+    }
   }
 
   /**
@@ -331,33 +747,36 @@ public class TsFileSequenceReader implements AutoCloseable {
    * @return a CHUNK_GROUP_FOOTER
    * @throws IOException io error
    */
-  public ChunkGroupFooter readChunkGroupFooter() throws IOException {
-    return ChunkGroupFooter.deserializeFrom(tsFileInput.wrapAsInputStream(), true);
+  public ChunkGroupHeader readChunkGroupHeader() throws IOException {
+    return ChunkGroupHeader.deserializeFrom(tsFileInput.wrapAsInputStream(), true);
   }
 
   /**
    * read data from current position of the input, and deserialize it to a CHUNK_GROUP_FOOTER.
    *
-   * @param position the offset of the chunk group footer in the file
+   * @param position   the offset of the chunk group footer in the file
    * @param markerRead true if the offset does not contains the marker , otherwise false
    * @return a CHUNK_GROUP_FOOTER
    * @throws IOException io error
    */
-  public ChunkGroupFooter readChunkGroupFooter(long position, boolean markerRead)
+  public ChunkGroupHeader readChunkGroupHeader(long position, boolean markerRead)
       throws IOException {
-    return ChunkGroupFooter.deserializeFrom(tsFileInput, position, markerRead);
+    return ChunkGroupHeader.deserializeFrom(tsFileInput, position, markerRead);
   }
 
-  /**
-   * After reading the footer of a ChunkGroup, call this method to set the file pointer to the start
-   * of the data of this ChunkGroup if you want to read its data next. <br> This method is not
-   * threadsafe.
-   *
-   * @param footer the chunkGroupFooter which you want to read data
-   */
-  public void setPositionToAChunkGroup(ChunkGroupFooter footer) throws IOException {
-    tsFileInput
-        .position(tsFileInput.position() - footer.getDataSize() - footer.getSerializedSize());
+  public void readPlanIndex() throws IOException {
+    ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
+    if (ReadWriteIOUtils.readAsPossible(tsFileInput, buffer) == 0) {
+      throw new IOException("reach the end of the file.");
+    }
+    buffer.flip();
+    minPlanIndex = buffer.getLong();
+    buffer.clear();
+    if (ReadWriteIOUtils.readAsPossible(tsFileInput, buffer) == 0) {
+      throw new IOException("reach the end of the file.");
+    }
+    buffer.flip();
+    maxPlanIndex = buffer.getLong();
   }
 
   /**
@@ -367,40 +786,18 @@ public class TsFileSequenceReader implements AutoCloseable {
    * @return a CHUNK_HEADER
    * @throws IOException io error
    */
-  public ChunkHeader readChunkHeader() throws IOException {
-    return ChunkHeader.deserializeFrom(tsFileInput.wrapAsInputStream(), true);
+  public ChunkHeader readChunkHeader(byte chunkType) throws IOException {
+    return ChunkHeader.deserializeFrom(tsFileInput.wrapAsInputStream(), chunkType);
   }
 
   /**
    * read the chunk's header.
    *
-   * @param position the file offset of this chunk's header
+   * @param position        the file offset of this chunk's header
    * @param chunkHeaderSize the size of chunk's header
-   * @param markerRead true if the offset does not contains the marker , otherwise false
    */
-  private ChunkHeader readChunkHeader(long position, int chunkHeaderSize, boolean markerRead)
-      throws IOException {
-    return ChunkHeader.deserializeFrom(tsFileInput, position, chunkHeaderSize, markerRead);
-  }
-
-  /**
-   * notice, the position of the channel MUST be at the end of this header. <br> This method is not
-   * threadsafe.
-   *
-   * @return the pages of this chunk
-   */
-  public ByteBuffer readChunk(ChunkHeader header) throws IOException {
-    return readData(-1, header.getDataSize());
-  }
-
-  /**
-   * notice, this function will modify channel's position.
-   *
-   * @param position the offset of the chunk data
-   * @return the pages of this chunk
-   */
-  public ByteBuffer readChunk(ChunkHeader header, long position) throws IOException {
-    return readData(position, header.getDataSize());
+  private ChunkHeader readChunkHeader(long position, int chunkHeaderSize) throws IOException {
+    return ChunkHeader.deserializeFrom(tsFileInput, position, chunkHeaderSize);
   }
 
   /**
@@ -420,12 +817,12 @@ public class TsFileSequenceReader implements AutoCloseable {
    * @param metaData -given chunk meta data
    * @return -chunk
    */
-  public Chunk readMemChunk(ChunkMetaData metaData) throws IOException {
+  public Chunk readMemChunk(ChunkMetadata metaData) throws IOException {
     int chunkHeadSize = ChunkHeader.getSerializedSize(metaData.getMeasurementUid());
-    ChunkHeader header = readChunkHeader(metaData.getOffsetOfChunkHeader(), chunkHeadSize, false);
+    ChunkHeader header = readChunkHeader(metaData.getOffsetOfChunkHeader(), chunkHeadSize);
     ByteBuffer buffer = readChunk(metaData.getOffsetOfChunkHeader() + header.getSerializedSize(),
         header.getDataSize());
-    return new Chunk(header, buffer, metaData.getDeletedAt(), endianType);
+    return new Chunk(header, buffer, metaData.getDeleteIntervalList(), metaData.getStatistics());
   }
 
   /**
@@ -433,20 +830,8 @@ public class TsFileSequenceReader implements AutoCloseable {
    *
    * @param type given tsfile data type
    */
-  public PageHeader readPageHeader(TSDataType type) throws IOException {
-    return PageHeader.deserializeFrom(tsFileInput.wrapAsInputStream(), type);
-  }
-
-  /**
-   * read the page's header.
-   *
-   * @param dataType given tsfile data type
-   * @param position the file offset of this chunk's header
-   * @param markerRead true if the offset does not contains the marker , otherwise false
-   */
-  private PageHeader readPageHeader(TSDataType dataType, long position, boolean markerRead)
-      throws IOException {
-    return PageHeader.deserializeFrom(dataType, tsFileInput, position, markerRead);
+  public PageHeader readPageHeader(TSDataType type, boolean hasStatistic) throws IOException {
+    return PageHeader.deserializeFrom(tsFileInput.wrapAsInputStream(), type, hasStatistic);
   }
 
   public long position() throws IOException {
@@ -461,33 +846,17 @@ public class TsFileSequenceReader implements AutoCloseable {
     tsFileInput.position(tsFileInput.position() + header.getCompressedSize());
   }
 
-  /**
-   *
-   */
-  public long skipPageData(PageHeader header, long position) throws IOException {
-    return position + header.getCompressedSize();
-  }
-
-
   public ByteBuffer readPage(PageHeader header, CompressionType type) throws IOException {
-    return readPage(header, type, -1);
-  }
-
-  private ByteBuffer readPage(PageHeader header, CompressionType type, long position)
-      throws IOException {
-    ByteBuffer buffer = readData(position, header.getCompressedSize());
+    ByteBuffer buffer = readData(-1, header.getCompressedSize());
     IUnCompressor unCompressor = IUnCompressor.getUnCompressor(type);
     ByteBuffer uncompressedBuffer = ByteBuffer.allocate(header.getUncompressedSize());
-    switch (type) {
-      case UNCOMPRESSED:
-        return buffer;
-      default:
-        // FIXME if the buffer is not array-implemented.
-        unCompressor.uncompress(buffer.array(), buffer.position(), buffer.remaining(),
-            uncompressedBuffer.array(),
-            0);
-        return uncompressedBuffer;
-    }
+    if (type == CompressionType.UNCOMPRESSED) {
+      return buffer;
+    }// FIXME if the buffer is not array-implemented.
+    unCompressor.uncompress(buffer.array(), buffer.position(), buffer.remaining(),
+        uncompressedBuffer.array(),
+        0);
+    return uncompressedBuffer;
   }
 
   /**
@@ -502,13 +871,12 @@ public class TsFileSequenceReader implements AutoCloseable {
     return markerBuffer.get();
   }
 
-  public byte readMarker(long position) throws IOException {
-    return readData(position, Byte.BYTES).get();
-  }
-
+  @Override
   public void close() throws IOException {
+    if (resourceLogger.isDebugEnabled()) {
+      resourceLogger.debug("{} reader is closed.", file);
+    }
     this.tsFileInput.close();
-    deviceMetadataMap = null;
   }
 
   public String getFileName() {
@@ -526,19 +894,22 @@ public class TsFileSequenceReader implements AutoCloseable {
    * changed.
    *
    * @param position the start position of data in the tsFileInput, or the current position if
-   * position = -1
-   * @param size the size of data that want to read
+   *                 position = -1
+   * @param size     the size of data that want to read
    * @return data that been read.
    */
-  private ByteBuffer readData(long position, int size) throws IOException {
+  protected ByteBuffer readData(long position, int size) throws IOException {
     ByteBuffer buffer = ByteBuffer.allocate(size);
-    if (position == -1) {
+    if (position < 0) {
       if (ReadWriteIOUtils.readAsPossible(tsFileInput, buffer) != size) {
         throw new IOException("reach the end of the data");
       }
     } else {
-      if (ReadWriteIOUtils.readAsPossible(tsFileInput, buffer, position, size) != size) {
-        throw new IOException("reach the end of the data");
+      long actualReadSize = ReadWriteIOUtils.readAsPossible(tsFileInput, buffer, position, size);
+      if (actualReadSize != size) {
+        throw new IOException(
+            String.format("reach the end of the data. Size of data that want to read: %s,"
+                + "actual read size: %s, position: %s", size, actualReadSize, position));
       }
     }
     buffer.flip();
@@ -546,27 +917,39 @@ public class TsFileSequenceReader implements AutoCloseable {
   }
 
   /**
+   * read data from tsFileInput, from the current position (if position = -1), or the given
+   * position.
+   *
+   * @param start the start position of data in the tsFileInput, or the current position if position
+   *              = -1
+   * @param end   the end position of data that want to read
+   * @return data that been read.
+   */
+  protected ByteBuffer readData(long start, long end) throws IOException {
+    return readData(start, (int) (end - start));
+  }
+
+  /**
    * notice, the target bytebuffer are not flipped.
    */
   public int readRaw(long position, int length, ByteBuffer target) throws IOException {
-    return ReadWriteIOUtils
-        .readAsPossible(tsFileInput, target, position, length);
+    return ReadWriteIOUtils.readAsPossible(tsFileInput, target, position, length);
   }
 
   /**
    * Self Check the file and return the position before where the data is safe.
    *
-   * @param newSchema @OUT.  the measurement schema in the file will be added into this parameter.
-   * (can be null)
-   * @param newMetaData @OUT can not be null, the chunk group metadta in the file will be added into
-   * this parameter.
-   * @param fastFinish if true and the file is complete, then newSchema and newMetaData parameter
-   * will be not modified.
+   * @param newSchema              the schema on each time series in the file
+   * @param chunkGroupMetadataList ChunkGroupMetadata List
+   * @param fastFinish             if true and the file is complete, then newSchema and
+   *                               chunkGroupMetadataList parameter will be not modified.
    * @return the position of the file that is fine. All data after the position in the file should
    * be truncated.
    */
-  public long selfCheck(Map<String, MeasurementSchema> newSchema,
-      List<ChunkGroupMetaData> newMetaData, boolean fastFinish) throws IOException {
+  @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
+  public long selfCheck(Map<Path, MeasurementSchema> newSchema,
+      List<ChunkGroupMetadata> chunkGroupMetadataList,
+      boolean fastFinish) throws IOException {
     File checkFile = FSFactoryProducer.getFSFactory().getFile(this.file);
     long fileSize;
     if (!checkFile.exists()) {
@@ -574,267 +957,287 @@ public class TsFileSequenceReader implements AutoCloseable {
     } else {
       fileSize = checkFile.length();
     }
-    ChunkMetaData currentChunk;
+    ChunkMetadata currentChunk;
     String measurementID;
     TSDataType dataType;
     long fileOffsetOfChunk;
-    long startTimeOfChunk = 0;
-    long endTimeOfChunk = 0;
-    long numOfPoints = 0;
 
-    ChunkGroupMetaData currentChunkGroup;
-    List<ChunkMetaData> chunks = null;
-    String deviceID;
-    long startOffsetOfChunkGroup = 0;
-    long endOffsetOfChunkGroup;
-    long versionOfChunkGroup = 0;
+    // ChunkMetadata of current ChunkGroup
+    List<ChunkMetadata> chunkMetadataList = new ArrayList<>();
 
-    if (fileSize < TSFileConfig.MAGIC_STRING.getBytes().length + TSFileConfig.VERSION_NUMBER
-        .getBytes().length) {
+    int headerLength = TSFileConfig.MAGIC_STRING.getBytes().length + Byte.BYTES;
+    if (fileSize < headerLength) {
       return TsFileCheckStatus.INCOMPATIBLE_FILE;
     }
-    String magic = readHeadMagic(true);
-    tsFileInput.position(TSFileConfig.MAGIC_STRING.getBytes().length + TSFileConfig.VERSION_NUMBER
-        .getBytes().length);
-    if (!magic.equals(TSFileConfig.MAGIC_STRING)) {
+    if (!TSFileConfig.MAGIC_STRING.equals(readHeadMagic()) || (TSFileConfig.VERSION_NUMBER
+        != readVersionNumber())) {
       return TsFileCheckStatus.INCOMPATIBLE_FILE;
     }
 
-    if (fileSize == TSFileConfig.MAGIC_STRING.getBytes().length + TSFileConfig.VERSION_NUMBER
-        .getBytes().length) {
-      return TsFileCheckStatus.ONLY_MAGIC_HEAD;
-    } else if (readTailMagic().equals(magic)) {
+    tsFileInput.position(headerLength);
+    if (fileSize == headerLength) {
+      return headerLength;
+    } else if (isComplete()) {
       loadMetadataSize();
       if (fastFinish) {
         return TsFileCheckStatus.COMPLETE_FILE;
       }
     }
-    boolean newChunkGroup = true;
     // not a complete file, we will recover it...
-    long truncatedPosition = magicStringBytes.length;
-    boolean goon = true;
+    long truncatedSize = headerLength;
     byte marker;
-    int chunkCnt = 0;
+    String lastDeviceId = null;
+    List<MeasurementSchema> measurementSchemaList = new ArrayList<>();
     try {
-      while (goon && (marker = this.readMarker()) != MetaMarker.SEPARATOR) {
+      while ((marker = this.readMarker()) != MetaMarker.SEPARATOR) {
         switch (marker) {
           case MetaMarker.CHUNK_HEADER:
-            // this is the first chunk of a new ChunkGroup.
-            if (newChunkGroup) {
-              newChunkGroup = false;
-              chunks = new ArrayList<>();
-              startOffsetOfChunkGroup = this.position() - 1;
-            }
+          case MetaMarker.ONLY_ONE_PAGE_CHUNK_HEADER:
             fileOffsetOfChunk = this.position() - 1;
             // if there is something wrong with a chunk, we will drop the whole ChunkGroup
             // as different chunks may be created by the same insertions(sqls), and partial
             // insertion is not tolerable
-            ChunkHeader header = this.readChunkHeader();
-            measurementID = header.getMeasurementID();
-            if (newSchema != null) {
-              newSchema.putIfAbsent(measurementID,
-                  new MeasurementSchema(measurementID, header.getDataType(),
-                      header.getEncodingType(), header.getCompressionType()));
-            }
-            dataType = header.getDataType();
+            ChunkHeader chunkHeader = this.readChunkHeader(marker);
+            measurementID = chunkHeader.getMeasurementID();
+            MeasurementSchema measurementSchema = new MeasurementSchema(measurementID,
+                chunkHeader.getDataType(),
+                chunkHeader.getEncodingType(), chunkHeader.getCompressionType());
+            measurementSchemaList.add(measurementSchema);
+            dataType = chunkHeader.getDataType();
             Statistics<?> chunkStatistics = Statistics.getStatsByType(dataType);
-            if (header.getNumOfPages() > 0) {
-              PageHeader pageHeader = this.readPageHeader(header.getDataType());
-              numOfPoints += pageHeader.getNumOfValues();
-              startTimeOfChunk = pageHeader.getMinTimestamp();
-              endTimeOfChunk = pageHeader.getMaxTimestamp();
-              chunkStatistics.mergeStatistics(pageHeader.getStatistics());
-              this.skipPageData(pageHeader);
+            int dataSize = chunkHeader.getDataSize();
+            if (chunkHeader.getChunkType() == MetaMarker.CHUNK_HEADER) {
+              while (dataSize > 0) {
+                // a new Page
+                PageHeader pageHeader = this.readPageHeader(chunkHeader.getDataType(), true);
+                chunkStatistics.mergeStatistics(pageHeader.getStatistics());
+                this.skipPageData(pageHeader);
+                dataSize -= pageHeader.getSerializedPageSize();
+                chunkHeader.increasePageNums(1);
+              }
+            } else {
+              // only one page without statistic, we need to iterate each point to generate statistic
+              PageHeader pageHeader = this.readPageHeader(chunkHeader.getDataType(), false);
+              Decoder valueDecoder = Decoder
+                  .getDecoderByType(chunkHeader.getEncodingType(), chunkHeader.getDataType());
+              ByteBuffer pageData = readPage(pageHeader, chunkHeader.getCompressionType());
+              Decoder timeDecoder = Decoder.getDecoderByType(
+                  TSEncoding.valueOf(TSFileDescriptor.getInstance().getConfig().getTimeEncoder()),
+                  TSDataType.INT64);
+              PageReader reader = new PageReader(pageHeader, pageData, chunkHeader.getDataType(),
+                  valueDecoder, timeDecoder, null);
+              BatchData batchData = reader.getAllSatisfiedPageData();
+              while (batchData.hasCurrent()) {
+                switch (dataType) {
+                  case INT32:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getInt());
+                    break;
+                  case INT64:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getLong());
+                    break;
+                  case FLOAT:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getFloat());
+                    break;
+                  case DOUBLE:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getDouble());
+                    break;
+                  case BOOLEAN:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getBoolean());
+                    break;
+                  case TEXT:
+                    chunkStatistics.update(batchData.currentTime(), batchData.getBinary());
+                    break;
+                  default:
+                    throw new IOException("Unexpected type " + dataType);
+                }
+                batchData.next();
+              }
+              chunkHeader.increasePageNums(1);
             }
-            for (int j = 1; j < header.getNumOfPages() - 1; j++) {
-              //a new Page
-              PageHeader pageHeader = this.readPageHeader(header.getDataType());
-              numOfPoints += pageHeader.getNumOfValues();
-              chunkStatistics.mergeStatistics(pageHeader.getStatistics());
-              this.skipPageData(pageHeader);
-            }
-            if (header.getNumOfPages() > 1) {
-              PageHeader pageHeader = this.readPageHeader(header.getDataType());
-              numOfPoints += pageHeader.getNumOfValues();
-              endTimeOfChunk = pageHeader.getMaxTimestamp();
-              chunkStatistics.mergeStatistics(pageHeader.getStatistics());
-              this.skipPageData(pageHeader);
-            }
-            currentChunk = new ChunkMetaData(measurementID, dataType, fileOffsetOfChunk,
-                startTimeOfChunk, endTimeOfChunk);
-            currentChunk.setNumOfPoints(numOfPoints);
-            ByteBuffer[] statisticsArray = new ByteBuffer[StatisticType.getTotalTypeNum()];
-            statisticsArray[StatisticType.min_value.ordinal()] = ByteBuffer
-                .wrap(chunkStatistics.getMinBytes());
-            statisticsArray[StatisticType.max_value.ordinal()] = ByteBuffer
-                .wrap(chunkStatistics.getMaxBytes());
-            statisticsArray[StatisticType.first_value.ordinal()] = ByteBuffer
-                .wrap(chunkStatistics.getFirstBytes());
-            statisticsArray[StatisticType.last_value.ordinal()] = ByteBuffer
-                .wrap(chunkStatistics.getLastBytes());
-            statisticsArray[StatisticType.sum_value.ordinal()] = ByteBuffer
-                .wrap(chunkStatistics.getSumBytes());
-            TsDigest tsDigest = new TsDigest();
-            tsDigest.setStatistics(statisticsArray);
-            currentChunk.setDigest(tsDigest);
-            chunks.add(currentChunk);
-            numOfPoints = 0;
-            chunkCnt++;
+            currentChunk = new ChunkMetadata(measurementID, dataType, fileOffsetOfChunk,
+                chunkStatistics);
+            chunkMetadataList.add(currentChunk);
             break;
-          case MetaMarker.CHUNK_GROUP_FOOTER:
-            //this is a chunk group
-            //if there is something wrong with the ChunkGroup Footer, we will drop this ChunkGroup
-            //because we can not guarantee the correctness of the deviceId.
-            ChunkGroupFooter chunkGroupFooter = this.readChunkGroupFooter();
-            deviceID = chunkGroupFooter.getDeviceID();
-            endOffsetOfChunkGroup = this.position();
-            currentChunkGroup = new ChunkGroupMetaData(deviceID, chunks, startOffsetOfChunkGroup);
-            currentChunkGroup.setEndOffsetOfChunkGroup(endOffsetOfChunkGroup);
-            currentChunkGroup.setVersion(versionOfChunkGroup++);
-            newMetaData.add(currentChunkGroup);
-            newChunkGroup = true;
-            truncatedPosition = this.position();
-
-            totalChunkNum += chunkCnt;
-            chunkCnt = 0;
+          case MetaMarker.CHUNK_GROUP_HEADER:
+            // if there is something wrong with the ChunkGroup Header, we will drop this ChunkGroup
+            // because we can not guarantee the correctness of the deviceId.
+            truncatedSize = this.position() - 1;
+            if (lastDeviceId != null) {
+              // schema of last chunk group
+              if (newSchema != null) {
+                for (MeasurementSchema tsSchema : measurementSchemaList) {
+                  newSchema
+                      .putIfAbsent(new Path(lastDeviceId, tsSchema.getMeasurementId()), tsSchema);
+                }
+              }
+              measurementSchemaList = new ArrayList<>();
+              // last chunk group Metadata
+              chunkGroupMetadataList.add(new ChunkGroupMetadata(lastDeviceId, chunkMetadataList));
+            }
+            // this is a chunk group
+            chunkMetadataList = new ArrayList<>();
+            ChunkGroupHeader chunkGroupHeader = this.readChunkGroupHeader();
+            lastDeviceId = chunkGroupHeader.getDeviceID();
+            break;
+          case MetaMarker.OPERATION_INDEX_RANGE:
+            truncatedSize = this.position() - 1;
+            if (lastDeviceId != null) {
+              // schema of last chunk group
+              if (newSchema != null) {
+                for (MeasurementSchema tsSchema : measurementSchemaList) {
+                  newSchema
+                      .putIfAbsent(new Path(lastDeviceId, tsSchema.getMeasurementId()), tsSchema);
+                }
+              }
+              measurementSchemaList = new ArrayList<>();
+              // last chunk group Metadata
+              chunkGroupMetadataList.add(new ChunkGroupMetadata(lastDeviceId, chunkMetadataList));
+              lastDeviceId = null;
+            }
+            readPlanIndex();
+            truncatedSize = this.position();
             break;
           default:
             // the disk file is corrupted, using this file may be dangerous
-            MetaMarker.handleUnexpectedMarker(marker);
-            goon = false;
-            logger.error(String
-                .format("Unrecognized marker detected, this file {%s} may be corrupted", file));
+            throw new IOException("Unexpected marker " + marker);
         }
       }
-      // now we read the tail of the data section, so we are sure that the last ChunkGroupFooter is
-      // complete.
-      truncatedPosition = this.position() - 1;
-    } catch (Exception e2) {
-      logger.info("TsFile {} self-check cannot proceed at position {} after {} chunk groups "
-          + "recovered, because : {}", file, this.position(), newMetaData.size(), e2.getMessage());
+      // now we read the tail of the data section, so we are sure that the last
+      // ChunkGroupFooter is complete.
+      if (lastDeviceId != null) {
+        // schema of last chunk group
+        if (newSchema != null) {
+          for (MeasurementSchema tsSchema : measurementSchemaList) {
+            newSchema
+                .putIfAbsent(new Path(lastDeviceId, tsSchema.getMeasurementId()), tsSchema);
+          }
+        }
+        // last chunk group Metadata
+        chunkGroupMetadataList.add(new ChunkGroupMetadata(lastDeviceId, chunkMetadataList));
+      }
+      truncatedSize = this.position() - 1;
+    } catch (Exception e) {
+      logger.info("TsFile {} self-check cannot proceed at position {} " + "recovered, because : {}",
+          file, this.position(), e.getMessage());
     }
     // Despite the completeness of the data section, we will discard current FileMetadata
     // so that we can continue to write data into this tsfile.
-    return truncatedPosition;
+    return truncatedSize;
   }
 
-  public int getTotalChunkNum() {
-    return totalChunkNum;
+  /**
+   * get ChunkMetaDatas of given path
+   *
+   * @param path timeseries path
+   * @return List of ChunkMetaData
+   */
+  public List<ChunkMetadata> getChunkMetadataList(Path path) throws IOException {
+    TimeseriesMetadata timeseriesMetaData = readTimeseriesMetadata(path);
+    if (timeseriesMetaData == null) {
+      return Collections.emptyList();
+    }
+    List<ChunkMetadata> chunkMetadataList = readChunkMetaDataList(timeseriesMetaData);
+    chunkMetadataList.sort(Comparator.comparingLong(ChunkMetadata::getStartTime));
+    return chunkMetadataList;
   }
 
-  public List<ChunkMetaData> getChunkMetadataList(Path path) throws IOException {
-    if (tsFileMetaData == null) {
+  /**
+   * get ChunkMetaDatas in given TimeseriesMetaData
+   *
+   * @return List of ChunkMetaData
+   */
+  public List<ChunkMetadata> readChunkMetaDataList(TimeseriesMetadata timeseriesMetaData)
+      throws IOException {
+    try {
       readFileMetadata();
+      ArrayList<ChunkMetadata> chunkMetadataList = new ArrayList<>();
+      long startOffsetOfChunkMetadataList = timeseriesMetaData.getOffsetOfChunkMetaDataList();
+      int dataSizeOfChunkMetadataList = timeseriesMetaData.getDataSizeOfChunkMetaDataList();
+
+      ByteBuffer buffer = readData(startOffsetOfChunkMetadataList, dataSizeOfChunkMetadataList);
+      while (buffer.hasRemaining()) {
+        chunkMetadataList.add(ChunkMetadata.deserializeFrom(buffer, timeseriesMetaData));
+      }
+
+      // minimize the storage of an ArrayList instance.
+      chunkMetadataList.trimToSize();
+      return chunkMetadataList;
+    } catch (BufferOverflowException e) {
+      logger.error("Something error happened while reading ChunkMetaDataList of file {}", file);
+      throw e;
     }
-    if (!tsFileMetaData.containsDevice(path.getDevice())) {
-      return new ArrayList<>();
-    }
+  }
 
-    // get the index information of TsDeviceMetadata
-    TsDeviceMetadataIndex index = tsFileMetaData.getDeviceMetadataIndex(path.getDevice());
-
-    // read TsDeviceMetadata from file
-    TsDeviceMetadata tsDeviceMetadata = readTsDeviceMetaData(index);
-
-    // get all ChunkMetaData of this path included in all ChunkGroups of this device
-    List<ChunkMetaData> chunkMetaDataList = new ArrayList<>();
-    for (ChunkGroupMetaData chunkGroupMetaData : tsDeviceMetadata.getChunkGroupMetaDataList()) {
-      List<ChunkMetaData> chunkMetaDataListInOneChunkGroup = chunkGroupMetaData
-          .getChunkMetaDataList();
-      for (ChunkMetaData chunkMetaData : chunkMetaDataListInOneChunkGroup) {
-        if (path.getMeasurement().equals(chunkMetaData.getMeasurementUid())) {
-          chunkMetaData.setVersion(chunkGroupMetaData.getVersion());
-          chunkMetaDataList.add(chunkMetaData);
-        }
+  /**
+   * get all measurements in this file
+   *
+   * @return measurement -> datatype
+   */
+  public Map<String, TSDataType> getAllMeasurements() throws IOException {
+    Map<String, TSDataType> result = new HashMap<>();
+    for (String device : getAllDevices()) {
+      Map<String, TimeseriesMetadata> timeseriesMetadataMap = readDeviceMetadata(device);
+      for (TimeseriesMetadata timeseriesMetadata : timeseriesMetadataMap.values()) {
+        result.put(timeseriesMetadata.getMeasurementId(), timeseriesMetadata.getTSDataType());
       }
     }
-    chunkMetaDataList.sort(Comparator.comparingLong(ChunkMetaData::getStartTime));
-    return chunkMetaDataList;
-  }
-
-  public List<ChunkGroupMetaData> getSortedChunkGroupMetaDataListByDeviceIds() throws IOException {
-    if (tsFileMetaData == null) {
-      readFileMetadata();
-    }
-
-    List<ChunkGroupMetaData> result = new ArrayList<>();
-
-    for (Map.Entry<String, TsDeviceMetadataIndex> entry : tsFileMetaData.getDeviceMap()
-        .entrySet()) {
-      // read TsDeviceMetadata from file
-      TsDeviceMetadata tsDeviceMetadata = readTsDeviceMetaData(entry.getValue());
-      result.addAll(tsDeviceMetadata.getChunkGroupMetaDataList());
-    }
-    // sort by the start offset Of the ChunkGroup
-    result.sort(Comparator.comparingLong(ChunkGroupMetaData::getStartOffsetOfChunkGroup));
-
     return result;
   }
 
   /**
-   * get device names in range
+   * get device names which has valid chunks in [start, end)
    *
-   * @param start start of the file
-   * @param end end of the file
+   * @param start start of the partition
+   * @param end   end of the partition
    * @return device names in range
    */
-  public List<String> getDeviceNameInRange(long start, long end) {
+  public List<String> getDeviceNameInRange(long start, long end) throws IOException {
     List<String> res = new ArrayList<>();
-
-    try {
-      TsFileMetaData tsFileMetaData = readFileMetadata();
-      for (Map.Entry<String, TsDeviceMetadataIndex> entry : tsFileMetaData.getDeviceMap()
-          .entrySet()) {
-        TsDeviceMetadata tsDeviceMetadata = readTsDeviceMetaData(entry.getValue());
-        for (ChunkGroupMetaData chunkGroupMetaData : tsDeviceMetadata
-            .getChunkGroupMetaDataList()) {
-          LocateStatus mode = checkLocateStatus(chunkGroupMetaData, start,
-              end);
-          if (mode == LocateStatus.in) {
-            res.add(entry.getKey());
-            break;
-          }
-        }
+    for (String device : getAllDevices()) {
+      Map<String, List<ChunkMetadata>> seriesMetadataMap = readChunkMetadataInDevice(device);
+      if (hasDataInPartition(seriesMetadataMap, start, end)) {
+        res.add(device);
       }
-    } catch (IOException e) {
-      e.printStackTrace();
     }
-
     return res;
   }
 
   /**
-   * Check the location of a given chunkGroupMetaData with respect to a space partition constraint.
+   * Check if the device has at least one Chunk in this partition
    *
-   * @param chunkGroupMetaData the given chunkGroupMetaData
-   * @param spacePartitionStartPos the start position of the space partition
-   * @param spacePartitionEndPos the end position of the space partition
-   * @return LocateStatus
+   * @param seriesMetadataMap chunkMetaDataList of each measurement
+   * @param start             the start position of the space partition
+   * @param end               the end position of the space partition
    */
-  private LocateStatus checkLocateStatus(ChunkGroupMetaData chunkGroupMetaData,
-      long spacePartitionStartPos, long spacePartitionEndPos) {
-    long startOffsetOfChunkGroup = chunkGroupMetaData.getStartOffsetOfChunkGroup();
-    long endOffsetOfChunkGroup = chunkGroupMetaData.getEndOffsetOfChunkGroup();
-    long middleOffsetOfChunkGroup = (startOffsetOfChunkGroup + endOffsetOfChunkGroup) / 2;
-    if (spacePartitionStartPos <= middleOffsetOfChunkGroup
-        && middleOffsetOfChunkGroup < spacePartitionEndPos) {
-      return LocateStatus.in;
-    } else if (middleOffsetOfChunkGroup < spacePartitionStartPos) {
-      return LocateStatus.before;
-    } else {
-      return LocateStatus.after;
+  private boolean hasDataInPartition(Map<String, List<ChunkMetadata>> seriesMetadataMap,
+      long start, long end) {
+    for (List<ChunkMetadata> chunkMetadataList : seriesMetadataMap.values()) {
+      for (ChunkMetadata chunkMetadata : chunkMetadataList) {
+        LocateStatus location = MetadataQuerierByFileImpl
+            .checkLocateStatus(chunkMetadata, start, end);
+        if (location == LocateStatus.in) {
+          return true;
+        }
+      }
     }
+    return false;
   }
 
   /**
-   * The location of a chunkGroupMetaData with respect to a space partition constraint.
-   * <p>
-   * in - the middle point of the chunkGroupMetaData is located in the current space partition.
-   * before - the middle point of the chunkGroupMetaData is located before the current space
-   * partition. after - the middle point of the chunkGroupMetaData is located after the current
-   * space partition.
+   * The location of a chunkGroupMetaData with respect to a space partition constraint. <p> in - the
+   * middle point of the chunkGroupMetaData is located in the current space partition. before - the
+   * middle point of the chunkGroupMetaData is located before the current space partition. after -
+   * the middle point of the chunkGroupMetaData is located after the current space partition.
    */
-  private enum LocateStatus {
+  public enum LocateStatus {
     in, before, after
+  }
+
+  public long getMinPlanIndex() {
+    return minPlanIndex;
+  }
+
+  public long getMaxPlanIndex() {
+    return maxPlanIndex;
   }
 }

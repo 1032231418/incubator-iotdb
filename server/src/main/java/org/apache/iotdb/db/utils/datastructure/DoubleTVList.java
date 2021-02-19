@@ -18,12 +18,16 @@
  */
 package org.apache.iotdb.db.utils.datastructure;
 
-import static org.apache.iotdb.db.rescon.PrimitiveArrayPool.ARRAY_SIZE;
+import static org.apache.iotdb.db.rescon.PrimitiveArrayManager.ARRAY_SIZE;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.iotdb.db.rescon.PrimitiveArrayPool;
+import org.apache.iotdb.db.rescon.PrimitiveArrayManager;
+import org.apache.iotdb.db.utils.MathUtils;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.iotdb.tsfile.read.TimeValuePair;
+import org.apache.iotdb.tsfile.utils.TsPrimitiveType;
 
 public class DoubleTVList extends TVList {
 
@@ -43,7 +47,7 @@ public class DoubleTVList extends TVList {
     checkExpansion();
     int arrayIndex = size / ARRAY_SIZE;
     int elementIndex = size % ARRAY_SIZE;
-    minTime = minTime <= timestamp ? minTime : timestamp;
+    minTime = Math.min(minTime, timestamp);
     timestamps.get(arrayIndex)[elementIndex] = timestamp;
     values.get(arrayIndex)[elementIndex] = value;
     size++;
@@ -88,14 +92,15 @@ public class DoubleTVList extends TVList {
     return cloneArray;
   }
 
+  @Override
   public void sort() {
     if (sortedTimestamps == null || sortedTimestamps.length < size) {
-      sortedTimestamps = (long[][]) PrimitiveArrayPool
-          .getInstance().getDataListsByType(TSDataType.INT64, size);
+      sortedTimestamps = (long[][]) PrimitiveArrayManager
+          .createDataListsByType(TSDataType.INT64, size);
     }
     if (sortedValues == null || sortedValues.length < size) {
-      sortedValues = (double[][]) PrimitiveArrayPool
-          .getInstance().getDataListsByType(TSDataType.DOUBLE, size);
+      sortedValues = (double[][]) PrimitiveArrayManager
+          .createDataListsByType(TSDataType.DOUBLE, size);
     }
     sort(0, size);
     clearSortedValue();
@@ -107,7 +112,7 @@ public class DoubleTVList extends TVList {
   void clearValue() {
     if (values != null) {
       for (double[] dataArray : values) {
-        PrimitiveArrayPool.getInstance().release(dataArray);
+        PrimitiveArrayManager.release(dataArray);
       }
       values.clear();
     }
@@ -116,29 +121,30 @@ public class DoubleTVList extends TVList {
   @Override
   void clearSortedValue() {
     if (sortedValues != null) {
-      for (double[] dataArray : sortedValues) {
-        PrimitiveArrayPool.getInstance().release(dataArray);
-      }
       sortedValues = null;
     }
   }
 
   @Override
   protected void setFromSorted(int src, int dest) {
-    set(dest, sortedTimestamps[src/ARRAY_SIZE][src%ARRAY_SIZE], sortedValues[src/ARRAY_SIZE][src%ARRAY_SIZE]);
+    set(dest, sortedTimestamps[src / ARRAY_SIZE][src % ARRAY_SIZE],
+        sortedValues[src / ARRAY_SIZE][src % ARRAY_SIZE]);
   }
 
+  @Override
   protected void set(int src, int dest) {
     long srcT = getTime(src);
     double srcV = getDouble(src);
     set(dest, srcT, srcV);
   }
 
+  @Override
   protected void setToSorted(int src, int dest) {
-    sortedTimestamps[dest/ARRAY_SIZE][dest% ARRAY_SIZE] = getTime(src);
-    sortedValues[dest/ARRAY_SIZE][dest%ARRAY_SIZE] = getDouble(src);
+    sortedTimestamps[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getTime(src);
+    sortedValues[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getDouble(src);
   }
 
+  @Override
   protected void reverseRange(int lo, int hi) {
     hi--;
     while (lo < hi) {
@@ -153,8 +159,7 @@ public class DoubleTVList extends TVList {
 
   @Override
   protected void expandValues() {
-    values.add((double[]) PrimitiveArrayPool
-        .getInstance().getPrimitiveDataListByType(TSDataType.DOUBLE));
+    values.add((double[]) getPrimitiveArraysByType(TSDataType.DOUBLE));
   }
 
   @Override
@@ -169,23 +174,38 @@ public class DoubleTVList extends TVList {
   }
 
   @Override
-  protected void releaseLastValueArray() {
-    PrimitiveArrayPool.getInstance().release(values.remove(values.size() - 1));
+  public TimeValuePair getTimeValuePair(int index) {
+    return new TimeValuePair(getTime(index),
+        TsPrimitiveType.getByType(TSDataType.DOUBLE, getDouble(index)));
   }
 
   @Override
-  public void putDoubles(long[] time, double[] value) {
+  protected TimeValuePair getTimeValuePair(int index, long time, Integer floatPrecision,
+      TSEncoding encoding) {
+    double value = getDouble(index);
+    if (encoding == TSEncoding.RLE || encoding == TSEncoding.TS_2DIFF) {
+      value = MathUtils.roundWithGivenPrecision(value, floatPrecision);
+    }
+    return new TimeValuePair(time, TsPrimitiveType.getByType(TSDataType.DOUBLE, value));
+  }
+
+  @Override
+  protected void releaseLastValueArray() {
+    PrimitiveArrayManager.release(values.remove(values.size() - 1));
+  }
+
+  @Override
+  public void putDoubles(long[] time, double[] value, int start, int end) {
     checkExpansion();
-    int idx = 0;
-    int length = time.length;
+    int idx = start;
 
-    updateMinTimeAndSorted(time);
+    updateMinTimeAndSorted(time, start, end);
 
-    while (idx < length) {
-      int inputRemaining = length - idx;
+    while (idx < end) {
+      int inputRemaining = end - idx;
       int arrayIdx = size / ARRAY_SIZE;
       int elementIdx = size % ARRAY_SIZE;
-      int internalRemaining  = ARRAY_SIZE - elementIdx;
+      int internalRemaining = ARRAY_SIZE - elementIdx;
       if (internalRemaining >= inputRemaining) {
         // the remaining inputs can fit the last array, copy all remaining inputs into last array
         System.arraycopy(time, idx, timestamps.get(arrayIdx), elementIdx, inputRemaining);
@@ -202,5 +222,10 @@ public class DoubleTVList extends TVList {
         checkExpansion();
       }
     }
+  }
+
+  @Override
+  public TSDataType getDataType() {
+    return TSDataType.DOUBLE;
   }
 }

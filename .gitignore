@@ -3,6 +3,10 @@
 **/logs/*
 **/lib/**
 **/data/**
+**/raft/**
+
+# Python runtime file
+**/__pycache__/**
 
 # Eclipse IDE files
 **/.classpath
@@ -18,12 +22,6 @@
 # Apple OS X related
 **/.DS_Store
 derby-tsfile-db
-# intellj IDE files
-**/*.iml
-**/.idea/
-
-# Apple OS X related
-**/.DS_Store
 
 # build generated
 **/target/
@@ -45,7 +43,8 @@ tsfile-jdbc/src/main/resources/output/queryRes.csv
 *.tar
 #src/test/resources/logback.xml
 
-
+### CSV ###
+*.csv
 ### Maven ###
 grafana/target/
 !grafana/.mvn/wrapper/maven-wrapper.jar
@@ -74,12 +73,9 @@ grafana/data/
 ### vscode project
 **/.vscode/
 
-**/.DS_Store
-
 
 grafana/data/test.csv
 **/lib/
-*.jar
 /target/
 *.tsfile
 tsfile/src/test/resources/*.ts
@@ -87,3 +83,20 @@ tsfile/src/test/resources/*.ts
 ### Apache release ###
 local-snapshots-dir/
 venv/
+
+partitions.tmp
+partitions
+node_identifier
+
+### temporary file of the distributed version ###
+remote/
+
+# gitpod
+.theia/
+
+classes/
+
+### Cmake files ###
+*.cmake
+Makefile
+**/CMakeFiles/

@@ -18,20 +18,26 @@
  */
 package org.apache.iotdb.db.service;
 
+import java.io.IOException;
 import org.apache.iotdb.db.concurrent.IoTDBDefaultThreadExceptionHandler;
 import org.apache.iotdb.db.conf.IoTDBConfigCheck;
 import org.apache.iotdb.db.conf.IoTDBConstant;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.conf.adapter.ManageDynamicParameters;
-import org.apache.iotdb.db.conf.adapter.IoTDBConfigDynamicAdapter;
 import org.apache.iotdb.db.cost.statistic.Measurement;
 import org.apache.iotdb.db.engine.StorageEngine;
 import org.apache.iotdb.db.engine.cache.CacheHitRatioMonitor;
-import org.apache.iotdb.db.engine.merge.manage.MergeManager;
+import org.apache.iotdb.db.engine.compaction.CompactionMergeTaskPoolManager;
 import org.apache.iotdb.db.engine.flush.FlushManager;
+import org.apache.iotdb.db.engine.merge.manage.MergeManager;
 import org.apache.iotdb.db.exception.StartupException;
 import org.apache.iotdb.db.metadata.MManager;
 import org.apache.iotdb.db.monitor.StatMonitor;
+import org.apache.iotdb.db.query.control.TracingManager;
+import org.apache.iotdb.db.query.udf.service.TemporaryQueryDataFileService;
+import org.apache.iotdb.db.query.udf.service.UDFClassLoaderManager;
+import org.apache.iotdb.db.query.udf.service.UDFRegistrationService;
+import org.apache.iotdb.db.rescon.PrimitiveArrayManager;
+import org.apache.iotdb.db.rescon.SystemInfo;
 import org.apache.iotdb.db.rescon.TVListAllocator;
 import org.apache.iotdb.db.sync.receiver.SyncServerManager;
 import org.apache.iotdb.db.writelog.manager.MultiFileLogNodeManager;
@@ -44,15 +50,27 @@ public class IoTDB implements IoTDBMBean {
   private final String mbeanName = String.format("%s:%s=%s", IoTDBConstant.IOTDB_PACKAGE,
       IoTDBConstant.JMX_TYPE, "IoTDB");
   private RegisterManager registerManager = new RegisterManager();
+  public static MManager metaManager = MManager.getInstance();
 
   public static IoTDB getInstance() {
     return IoTDBHolder.INSTANCE;
   }
 
   public static void main(String[] args) {
-    IoTDBConfigCheck.getInstance().checkConfig();
+    if (args.length > 0) {
+      IoTDBDescriptor.getInstance().replaceProps(args);
+    }
+    try {
+      IoTDBConfigCheck.getInstance().checkConfig();
+    } catch (IOException e) {
+      logger.error("meet error when doing start checking", e);
+    }
     IoTDB daemon = IoTDB.getInstance();
     daemon.active();
+  }
+
+  public static void setMetaManager(MManager metaManager) {
+    IoTDB.metaManager = metaManager;
   }
 
   public void active() {
@@ -81,33 +99,48 @@ public class IoTDB implements IoTDBMBean {
 
     Runtime.getRuntime().addShutdownHook(new IoTDBShutdownHook());
     setUncaughtExceptionHandler();
-
+    logger.info("recover the schema...");
     initMManager();
-    registerManager.register(StorageEngine.getInstance());
-    registerManager.register(MultiFileLogNodeManager.getInstance());
     registerManager.register(JMXService.getInstance());
-    registerManager.register(JDBCService.getInstance());
-    registerManager.register(Monitor.getInstance());
-    registerManager.register(StatMonitor.getInstance());
-    registerManager.register(Measurement.INSTANCE);
-    registerManager.register(ManageDynamicParameters.getInstance());
-    registerManager.register(SyncServerManager.getInstance());
-    registerManager.register(TVListAllocator.getInstance());
     registerManager.register(FlushManager.getInstance());
-    registerManager.register(UpgradeSevice.getINSTANCE());
-    registerManager.register(MergeManager.getINSTANCE());
+    registerManager.register(MultiFileLogNodeManager.getInstance());
+    registerManager.register(Measurement.INSTANCE);
+    registerManager.register(TVListAllocator.getInstance());
     registerManager.register(CacheHitRatioMonitor.getInstance());
-    registerManager.register(MetricsService.getInstance());
+    registerManager.register(MergeManager.getINSTANCE());
+    registerManager.register(CompactionMergeTaskPoolManager.getInstance());
     JMXService.registerMBean(getInstance(), mbeanName);
+    registerManager.register(StorageEngine.getInstance());
+    registerManager.register(TemporaryQueryDataFileService.getInstance());
+    registerManager.register(UDFClassLoaderManager.getInstance());
+    registerManager.register(UDFRegistrationService.getInstance());
 
-    // When registering statMonitor, we should start recovering some statistics
-    // with latest values stored
-    // Warn: registMonitor() method should be called after systemDataRecovery()
-    if (IoTDBDescriptor.getInstance().getConfig().isEnableStatMonitor()) {
-      StatMonitor.getInstance().recovery();
+    registerManager.register(RPCService.getInstance());
+    if (IoTDBDescriptor.getInstance().getConfig().isEnableMetricService()) {
+      registerManager.register(MetricsService.getInstance());
+    }
+    if (IoTDBDescriptor.getInstance().getConfig().isEnableMQTTService()) {
+      registerManager.register(MQTTService.getInstance());
     }
 
-    logger.info("IoTDB is set up.");
+    logger.info("IoTDB is set up, now may some sgs are not ready, please wait several seconds...");
+
+    while (!StorageEngine.getInstance().isAllSgReady()) {
+      try {
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        logger.warn("IoTDB failed to set up for:" + e.getMessage());
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+
+    // Warn: registMonitor() method should be called after systemDataRecovery()
+    registerManager.register(StatMonitor.getInstance());
+    registerManager.register(SyncServerManager.getInstance());
+    registerManager.register(UpgradeSevice.getINSTANCE());
+
+    logger.info("Congratulation, IoTDB is set up successfully. Now, enjoy yourself!");
   }
 
   private void deactivate() {
@@ -117,13 +150,13 @@ public class IoTDB implements IoTDBMBean {
     logger.info("IoTDB is deactivated.");
   }
 
-  private void initMManager(){
-    MManager.getInstance().init();
-    IoTDBConfigDynamicAdapter.getInstance().setInitialized(true);
-    logger.debug("After initializing, ");
-    logger.debug(
-        "After initializing, max memTable num is {}, tsFile threshold is {}, memtableSize is {}",
-        IoTDBDescriptor.getInstance().getConfig().getMaxMemtableNumber(),
+  private void initMManager() {
+    long time = System.currentTimeMillis();
+    IoTDB.metaManager.init();
+    long end = System.currentTimeMillis() - time;
+    logger.info("spend {}ms to recover schema.", end);
+    logger.info(
+        "After initializing, tsFile threshold is {}, memtableSize is {}",
         IoTDBDescriptor.getInstance().getConfig().getTsFileSizeThreshold(),
         IoTDBDescriptor.getInstance().getConfig().getMemtableSizeThreshold());
 
@@ -132,6 +165,18 @@ public class IoTDB implements IoTDBMBean {
   @Override
   public void stop() {
     deactivate();
+  }
+
+  public void shutdown() throws Exception {
+    logger.info("Deactivating IoTDB...");
+    if (IoTDBDescriptor.getInstance().getConfig().isEnablePerformanceTracing()) {
+      TracingManager.getInstance().close();
+    }
+    registerManager.shutdownAll();
+    PrimitiveArrayManager.close();
+    SystemInfo.getInstance().close();
+    JMXService.deregisterMBean(mbeanName);
+    logger.info("IoTDB is deactivated.");
   }
 
   private void setUncaughtExceptionHandler() {

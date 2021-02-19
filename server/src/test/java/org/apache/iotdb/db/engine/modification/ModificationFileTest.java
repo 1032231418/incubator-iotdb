@@ -25,23 +25,23 @@ import static org.junit.Assert.fail;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
-import org.apache.iotdb.tsfile.read.common.Path;
-import org.junit.Ignore;
+
+import org.apache.iotdb.db.constant.TestConstant;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.junit.Test;
 
 public class ModificationFileTest {
 
   @Test
   public void readMyWrite() {
-    String tempFileName = "mod.temp";
+    String tempFileName = TestConstant.BASE_OUTPUT_PATH.concat("mod.temp");
     Modification[] modifications = new Modification[]{
-        new Deletion(new Path("d1", "s1"), 1, 1),
-        new Deletion(new Path("d1", "s2"), 2, 2),
-        new Deletion(new Path("d1", "s3"), 3, 3),
-        new Deletion(new Path("d1", "s41"), 4, 4)
+        new Deletion(new PartialPath(new String[]{"d1", "s1"}), 1, 1),
+        new Deletion(new PartialPath(new String[]{"d1", "s2"}), 2, 2),
+        new Deletion(new PartialPath(new String[]{"d1", "s3"}), 3, 3, 4),
+        new Deletion(new PartialPath(new String[]{"d1", "s41"}), 4, 4, 5)
     };
-    try {
-      ModificationFile mFile = new ModificationFile(tempFileName);
+    try (ModificationFile mFile = new ModificationFile(tempFileName)) {
       for (int i = 0; i < 2; i++) {
         mFile.write(modifications[i]);
       }
@@ -57,7 +57,6 @@ public class ModificationFileTest {
       for (int i = 0; i < 4; i++) {
         assertEquals(modifications[i], modificationList.get(i));
       }
-      mFile.close();
     } catch (IOException e) {
       fail(e.getMessage());
     } finally {
@@ -67,15 +66,14 @@ public class ModificationFileTest {
 
   @Test
   public void testAbort() {
-    String tempFileName = "mod.temp";
+    String tempFileName = TestConstant.BASE_OUTPUT_PATH.concat("mod.temp");
     Modification[] modifications = new Modification[]{
-        new Deletion(new Path("d1", "s1"), 1, 1),
-        new Deletion(new Path("d1", "s2"), 2, 2),
-        new Deletion(new Path("d1", "s3"), 3, 3),
-        new Deletion(new Path("d1", "s41"), 4, 4),
+        new Deletion(new PartialPath(new String[]{"d1", "s1"}), 1, 1),
+        new Deletion(new PartialPath(new String[]{"d1", "s2"}), 2, 2),
+        new Deletion(new PartialPath(new String[]{"d1", "s3"}), 3, 3, 4),
+        new Deletion(new PartialPath(new String[]{"d1", "s4"}), 4, 4, 5),
     };
-    try {
-      ModificationFile mFile = new ModificationFile(tempFileName);
+    try (ModificationFile mFile = new ModificationFile(tempFileName)) {
       for (int i = 0; i < 2; i++) {
         mFile.write(modifications[i]);
       }
@@ -93,7 +91,6 @@ public class ModificationFileTest {
       for (int i = 0; i < 3; i++) {
         assertEquals(modifications[i], modificationList.get(i));
       }
-      mFile.close();
     } catch (IOException e) {
       fail(e.getMessage());
     } finally {

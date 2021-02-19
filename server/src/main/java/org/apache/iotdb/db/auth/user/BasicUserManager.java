@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import org.apache.iotdb.db.auth.AuthException;
 import org.apache.iotdb.db.auth.entity.User;
@@ -287,7 +288,7 @@ public abstract class BasicUserManager implements IUserManager {
   public boolean isUserUseWaterMark(String username) throws AuthException {
     User user = getUser(username);
     if (user == null) {
-      throw new AuthException(String.format("No such user %s", username));
+      throw new AuthException(String.format(NO_SUCH_USER_ERROR, username));
     }
     return user.isUseWaterMark();
   }
@@ -296,7 +297,7 @@ public abstract class BasicUserManager implements IUserManager {
   public void setUserUseWaterMark(String username, boolean useWaterMark) throws AuthException {
     User user = getUser(username);
     if (user == null) {
-      throw new AuthException(String.format("No such user %s", username));
+      throw new AuthException(String.format(NO_SUCH_USER_ERROR, username));
     }
     boolean oldFlag = user.isUseWaterMark();
     if (oldFlag == useWaterMark) {
@@ -310,4 +311,23 @@ public abstract class BasicUserManager implements IUserManager {
       throw new AuthException(e);
     }
   }
+
+
+  @Override
+  public void replaceAllUsers(Map<String, User> users) throws AuthException {
+    synchronized (this) {
+      reset();
+      userMap = users;
+
+      for (Entry<String, User> entry : userMap.entrySet()) {
+        User user = entry.getValue();
+        try {
+          accessor.saveUser(user);
+        } catch (IOException e) {
+          throw new AuthException(e);
+        }
+      }
+    }
+  }
+
 }

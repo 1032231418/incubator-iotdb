@@ -18,12 +18,15 @@
  */
 package org.apache.iotdb.db.utils.datastructure;
 
-import static org.apache.iotdb.db.rescon.PrimitiveArrayPool.ARRAY_SIZE;
+import static org.apache.iotdb.db.rescon.PrimitiveArrayManager.ARRAY_SIZE;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.iotdb.db.rescon.PrimitiveArrayPool;
+import org.apache.iotdb.db.rescon.PrimitiveArrayManager;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.iotdb.tsfile.read.TimeValuePair;
+import org.apache.iotdb.tsfile.utils.TsPrimitiveType;
 
 public class LongTVList extends TVList {
 
@@ -43,7 +46,7 @@ public class LongTVList extends TVList {
     checkExpansion();
     int arrayIndex = size / ARRAY_SIZE;
     int elementIndex = size % ARRAY_SIZE;
-    minTime = minTime <= timestamp ? minTime : timestamp;
+    minTime = Math.min(minTime, timestamp);
     timestamps.get(arrayIndex)[elementIndex] = timestamp;
     values.get(arrayIndex)[elementIndex] = value;
     size++;
@@ -88,14 +91,14 @@ public class LongTVList extends TVList {
     return cloneArray;
   }
 
+  @Override
   public void sort() {
     if (sortedTimestamps == null || sortedTimestamps.length < size) {
-      sortedTimestamps = (long[][]) PrimitiveArrayPool
-          .getInstance().getDataListsByType(TSDataType.INT64, size);
+      sortedTimestamps = (long[][]) PrimitiveArrayManager
+          .createDataListsByType(TSDataType.INT64, size);
     }
     if (sortedValues == null || sortedValues.length < size) {
-      sortedValues = (long[][]) PrimitiveArrayPool
-          .getInstance().getDataListsByType(TSDataType.INT64, size);
+      sortedValues = (long[][]) PrimitiveArrayManager.createDataListsByType(TSDataType.INT64, size);
     }
     sort(0, size);
     clearSortedValue();
@@ -107,7 +110,7 @@ public class LongTVList extends TVList {
   void clearValue() {
     if (values != null) {
       for (long[] dataArray : values) {
-        PrimitiveArrayPool.getInstance().release(dataArray);
+        PrimitiveArrayManager.release(dataArray);
       }
       values.clear();
     }
@@ -116,29 +119,30 @@ public class LongTVList extends TVList {
   @Override
   void clearSortedValue() {
     if (sortedValues != null) {
-      for (long[] dataArray : sortedValues) {
-        PrimitiveArrayPool.getInstance().release(dataArray);
-      }
       sortedValues = null;
     }
   }
 
   @Override
   protected void setFromSorted(int src, int dest) {
-    set(dest, sortedTimestamps[src/ARRAY_SIZE][src%ARRAY_SIZE], sortedValues[src/ARRAY_SIZE][src%ARRAY_SIZE]);
+    set(dest, sortedTimestamps[src / ARRAY_SIZE][src % ARRAY_SIZE],
+        sortedValues[src / ARRAY_SIZE][src % ARRAY_SIZE]);
   }
 
+  @Override
   protected void set(int src, int dest) {
     long srcT = getTime(src);
     long srcV = getLong(src);
     set(dest, srcT, srcV);
   }
 
+  @Override
   protected void setToSorted(int src, int dest) {
-    sortedTimestamps[dest/ARRAY_SIZE][dest% ARRAY_SIZE] = getTime(src);
-    sortedValues[dest/ARRAY_SIZE][dest%ARRAY_SIZE] = getLong(src);
+    sortedTimestamps[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getTime(src);
+    sortedValues[dest / ARRAY_SIZE][dest % ARRAY_SIZE] = getLong(src);
   }
 
+  @Override
   protected void reverseRange(int lo, int hi) {
     hi--;
     while (lo < hi) {
@@ -153,8 +157,7 @@ public class LongTVList extends TVList {
 
   @Override
   protected void expandValues() {
-    values.add((long[]) PrimitiveArrayPool
-        .getInstance().getPrimitiveDataListByType(TSDataType.INT64));
+    values.add((long[]) getPrimitiveArraysByType(TSDataType.INT64));
   }
 
   @Override
@@ -169,23 +172,39 @@ public class LongTVList extends TVList {
   }
 
   @Override
-  protected void releaseLastValueArray() {
-    PrimitiveArrayPool.getInstance().release(values.remove(values.size() - 1));
+  public TimeValuePair getTimeValuePair(int index) {
+    return new TimeValuePair(getTime(index),
+        TsPrimitiveType.getByType(TSDataType.INT64, getLong(index)));
   }
 
   @Override
-  public void putLongs(long[] time, long[] value) {
+  protected TimeValuePair getTimeValuePair(int index, long time, Integer floatPrecision,
+      TSEncoding encoding) {
+    return new TimeValuePair(time, TsPrimitiveType.getByType(TSDataType.INT64, getLong(index)));
+  }
+
+  @Override
+  public TSDataType getDataType() {
+    return TSDataType.INT64;
+  }
+
+  @Override
+  protected void releaseLastValueArray() {
+    PrimitiveArrayManager.release(values.remove(values.size() - 1));
+  }
+
+  @Override
+  public void putLongs(long[] time, long[] value, int start, int end) {
     checkExpansion();
-    int idx = 0;
-    int length = time.length;
+    int idx = start;
 
-    updateMinTimeAndSorted(time);
+    updateMinTimeAndSorted(time, start, end);
 
-    while (idx < length) {
-      int inputRemaining = length - idx;
+    while (idx < end) {
+      int inputRemaining = end - idx;
       int arrayIdx = size / ARRAY_SIZE;
       int elementIdx = size % ARRAY_SIZE;
-      int internalRemaining  = ARRAY_SIZE - elementIdx;
+      int internalRemaining = ARRAY_SIZE - elementIdx;
       if (internalRemaining >= inputRemaining) {
         // the remaining inputs can fit the last array, copy all remaining inputs into last array
         System.arraycopy(time, idx, timestamps.get(arrayIdx), elementIdx, inputRemaining);

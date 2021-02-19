@@ -18,14 +18,9 @@
  */
 package org.apache.iotdb.db.integration;
 
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.SQLException;
-import java.sql.Statement;
-import org.apache.iotdb.db.service.IoTDB;
+import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.constant.TestConstant;
+import org.apache.iotdb.db.engine.storagegroup.virtualSg.HashVirtualPartitioner;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.jdbc.Config;
 import org.junit.After;
@@ -33,26 +28,26 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.sql.*;
+
 /**
  * Notice that, all test begins with "IoTDB" is integration test. All test which will start the IoTDB server should be
  * defined as integration test.
  */
 public class IoTDBCompleteIT {
 
-  private IoTDB daemon;
-
   @Before
   public void setUp() throws Exception {
+    // test different partition
+    HashVirtualPartitioner.getInstance().setStorageGroupNum(16);
     EnvironmentUtils.closeStatMonitor();
-    daemon = IoTDB.getInstance();
-    daemon.active();
     EnvironmentUtils.envSetUp();
   }
 
   @After
   public void tearDown() throws Exception {
-    daemon.stop();
     EnvironmentUtils.cleanEnv();
+    HashVirtualPartitioner.getInstance().setStorageGroupNum(IoTDBDescriptor.getInstance().getConfig().getVirtualStorageGroupNum());
   }
 
   @Test
@@ -402,7 +397,7 @@ public class IoTDBCompleteIT {
             result = "";
             while (resultSet.next()) {
               for (int i = 1; i <= count; i++) {
-                if (now_start > 0L && column[i - 1] == Constant.TIMESTAMP_STR) {
+                if (now_start > 0L && column[i - 1] == TestConstant.TIMESTAMP_STR) {
                   String timestr = resultSet.getString(i);
                   Long tn = Long.valueOf(timestr);
                   Long now = System.currentTimeMillis();

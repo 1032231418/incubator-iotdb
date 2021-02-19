@@ -19,15 +19,17 @@
 
 package org.apache.iotdb.db.engine.merge;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.iotdb.db.conf.IoTDBDescriptor;
+import org.apache.iotdb.db.constant.TestConstant;
+import org.apache.iotdb.db.engine.merge.manage.MergeResource;
+import org.apache.iotdb.db.engine.merge.task.MergeTask;
+import org.apache.iotdb.db.service.IoTDB;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.commons.io.FileUtils;
-import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.engine.merge.manage.MergeResource;
-import org.apache.iotdb.db.engine.merge.task.MergeTask;
-import org.apache.iotdb.db.metadata.MManager;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
 
 public class MergePerfTest extends MergeTest{
 
@@ -36,16 +38,16 @@ public class MergePerfTest extends MergeTest{
   private File tempSGDir;
 
   public void test() throws Exception {
-    MManager.getInstance().init();
-    tempSGDir = new File("tempSG");
+    IoTDB.metaManager.init();
+    tempSGDir = new File(TestConstant.BASE_OUTPUT_PATH.concat("tempSG"));
     tempSGDir.mkdirs();
     setUp();
     timeConsumption = System.currentTimeMillis();
     MergeResource resource = new MergeResource(seqResources, unseqResources);
     resource.setCacheDeviceMeta(true);
     MergeTask mergeTask =
-        new MergeTask(resource, tempSGDir.getPath(), (k, v
-            , l) -> {}, "test", fullMerge, 100, MERGE_TEST_SG);
+        new MergeTask(resource, tempSGDir.getPath(), (k, v, l) -> {
+        }, "test", fullMerge, 100, MERGE_TEST_SG);
     mergeTask.call();
     timeConsumption = System.currentTimeMillis() - timeConsumption;
     tearDown();
@@ -53,7 +55,7 @@ public class MergePerfTest extends MergeTest{
   }
 
   public static void main(String[] args) throws Exception {
-    IoTDBDescriptor.getInstance().getConfig().setChunkMergePointThreshold(-1);
+    IoTDBDescriptor.getInstance().getConfig().setMergeChunkPointNumberThreshold(-1);
 
     List<Long> timeConsumptions = new ArrayList<>();
     MergePerfTest perfTest = new MergePerfTest();

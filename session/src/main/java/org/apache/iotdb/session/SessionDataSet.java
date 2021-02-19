@@ -18,119 +18,226 @@
  */
 package org.apache.iotdb.session;
 
-import java.sql.SQLException;
+import static org.apache.iotdb.rpc.IoTDBRpcDataSet.START_INDEX;
+
+import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Set;
-import org.apache.iotdb.rpc.IoTDBRPCException;
-import org.apache.iotdb.rpc.RpcUtils;
-import org.apache.iotdb.service.rpc.thrift.TSCloseOperationReq;
-import org.apache.iotdb.service.rpc.thrift.TSFetchResultsReq;
-import org.apache.iotdb.service.rpc.thrift.TSFetchResultsResp;
+import java.util.Map;
+import org.apache.iotdb.rpc.IoTDBRpcDataSet;
+import org.apache.iotdb.rpc.IoTDBConnectionException;
+import org.apache.iotdb.rpc.StatementExecutionException;
 import org.apache.iotdb.service.rpc.thrift.TSIService;
-import org.apache.iotdb.service.rpc.thrift.TSOperationHandle;
 import org.apache.iotdb.service.rpc.thrift.TSQueryDataSet;
-import org.apache.iotdb.service.rpc.thrift.TSStatus;
+import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.read.common.Field;
 import org.apache.iotdb.tsfile.read.common.RowRecord;
+import org.apache.iotdb.tsfile.utils.Binary;
+import org.apache.iotdb.tsfile.utils.BytesUtils;
 import org.apache.thrift.TException;
 
 public class SessionDataSet {
 
-  private boolean getFlag = false;
-  private String sql;
-  private long queryId;
-  private RowRecord record;
-  private Iterator<RowRecord> recordItr;
-  private TSIService.Iface client = null;
-  private TSOperationHandle operationHandle;
-  private int batchSize = 512;
-  private List<String> columnTypeDeduplicatedList;
+  private final IoTDBRpcDataSet ioTDBRpcDataSet;
 
   public SessionDataSet(String sql, List<String> columnNameList, List<String> columnTypeList,
-      long queryId, TSIService.Iface client, TSOperationHandle operationHandle) {
-    this.sql = sql;
-    this.queryId = queryId;
-    this.client = client;
-    this.operationHandle = operationHandle;
+      Map<String, Integer> columnNameIndex,
+      long queryId, long statementId, TSIService.Iface client, long sessionId, TSQueryDataSet queryDataSet,
+      boolean ignoreTimeStamp) {
+    this.ioTDBRpcDataSet = new IoTDBRpcDataSet(sql, columnNameList, columnTypeList, columnNameIndex,
+        ignoreTimeStamp, queryId, statementId, client, sessionId, queryDataSet, Config.DEFAULT_FETCH_SIZE, 0);
+  }
 
-    // deduplicate columnTypeList according to columnNameList
-    this.columnTypeDeduplicatedList = new ArrayList<>();
-    Set<String> columnSet = new HashSet<>(); // for deduplication
-    for (int i = 0; i < columnNameList.size(); i++) {
-      String name = columnNameList.get(i);
-      if (!columnSet.contains(name)) {
-        columnSet.add(name);
-        columnTypeDeduplicatedList.add(columnTypeList.get(i));
+  public SessionDataSet(String sql, List<String> columnNameList, List<String> columnTypeList,
+      Map<String, Integer> columnNameIndex,
+      long queryId, long statementId, TSIService.Iface client, long sessionId, TSQueryDataSet queryDataSet,
+      boolean ignoreTimeStamp, long timeout) {
+    this.ioTDBRpcDataSet = new IoTDBRpcDataSet(sql, columnNameList, columnTypeList, columnNameIndex,
+        ignoreTimeStamp, queryId, statementId, client, sessionId, queryDataSet, Config.DEFAULT_FETCH_SIZE,
+        timeout);
+  }
+
+  public int getFetchSize() {
+    return ioTDBRpcDataSet.fetchSize;
+  }
+
+  public void setFetchSize(int fetchSize) {
+    ioTDBRpcDataSet.fetchSize = fetchSize;
+  }
+
+  public List<String> getColumnNames() {
+    return new ArrayList<>(ioTDBRpcDataSet.columnNameList);
+  }
+
+  public List<TSDataType> getColumnTypes() {
+    return new ArrayList<>(ioTDBRpcDataSet.columnTypeList);
+  }
+
+
+  public boolean hasNext() throws StatementExecutionException, IoTDBConnectionException {
+    return ioTDBRpcDataSet.next();
+  }
+
+
+  private RowRecord constructRowRecordFromValueArray() throws StatementExecutionException {
+    List<Field> outFields = new ArrayList<>();
+    for (int i = 0; i < ioTDBRpcDataSet.columnSize; i++) {
+      Field field;
+
+      int index = i + 1;
+      int datasetColumnIndex = i + START_INDEX;
+      if (ioTDBRpcDataSet.ignoreTimeStamp) {
+        index--;
+        datasetColumnIndex--;
       }
-    }
-  }
+      int loc =
+          ioTDBRpcDataSet.columnOrdinalMap.get(ioTDBRpcDataSet.columnNameList.get(index))
+              - START_INDEX;
 
-  public int getBatchSize() {
-    return batchSize;
-  }
-
-  public void setBatchSize(int batchSize) {
-    this.batchSize = batchSize;
-  }
-
-  public boolean hasNext() throws SQLException, IoTDBRPCException {
-    return getFlag || nextWithoutConstraints(sql, queryId);
-  }
-
-  public RowRecord next() throws SQLException, IoTDBRPCException {
-    if (!getFlag) {
-      nextWithoutConstraints(sql, queryId);
-    }
-
-    getFlag = false;
-    return record;
-  }
-
-
-  private boolean nextWithoutConstraints(String sql, long queryId)
-      throws SQLException, IoTDBRPCException {
-    if ((recordItr == null || !recordItr.hasNext())) {
-      TSFetchResultsReq req = new TSFetchResultsReq(sql, batchSize, queryId);
-
-      try {
-        TSFetchResultsResp resp = client.fetchResults(req);
-
-        RpcUtils.verifySuccess(resp.getStatus());
-
-        if (!resp.hasResultSet) {
-          return false;
-        } else {
-          TSQueryDataSet tsQueryDataSet = resp.getQueryDataSet();
-          List<RowRecord> records = SessionUtils
-              .convertRowRecords(tsQueryDataSet, columnTypeDeduplicatedList);
-          recordItr = records.iterator();
+      if (!ioTDBRpcDataSet.isNull(datasetColumnIndex)) {
+        byte[] valueBytes = ioTDBRpcDataSet.values[loc];
+        TSDataType dataType = ioTDBRpcDataSet.columnTypeDeduplicatedList.get(loc);
+        field = new Field(dataType);
+        switch (dataType) {
+          case BOOLEAN:
+            boolean booleanValue = BytesUtils.bytesToBool(valueBytes);
+            field.setBoolV(booleanValue);
+            break;
+          case INT32:
+            int intValue = BytesUtils.bytesToInt(valueBytes);
+            field.setIntV(intValue);
+            break;
+          case INT64:
+            long longValue = BytesUtils.bytesToLong(valueBytes);
+            field.setLongV(longValue);
+            break;
+          case FLOAT:
+            float floatValue = BytesUtils.bytesToFloat(valueBytes);
+            field.setFloatV(floatValue);
+            break;
+          case DOUBLE:
+            double doubleValue = BytesUtils.bytesToDouble(valueBytes);
+            field.setDoubleV(doubleValue);
+            break;
+          case TEXT:
+            field.setBinaryV(new Binary(valueBytes));
+            break;
+          default:
+            throw new UnSupportedDataTypeException(String
+                .format("Data type %s is not supported.",
+                    ioTDBRpcDataSet.columnTypeDeduplicatedList.get(i)));
         }
-      } catch (TException e) {
-        throw new SQLException(
-            "Cannot fetch result from server, because of network connection : {} ", e);
+      } else {
+        field = new Field(null);
       }
-
+      outFields.add(field);
     }
-
-    record = recordItr.next();
-    getFlag = true;
-    return true;
+    return new RowRecord(BytesUtils.bytesToLong(ioTDBRpcDataSet.time), outFields);
   }
 
-  public void closeOperationHandle() throws SQLException {
+
+  public RowRecord next() throws StatementExecutionException, IoTDBConnectionException {
+    if (!ioTDBRpcDataSet.hasCachedRecord && !hasNext()) {
+      return null;
+    }
+    ioTDBRpcDataSet.hasCachedRecord = false;
+
+    return constructRowRecordFromValueArray();
+  }
+
+  public void closeOperationHandle() throws StatementExecutionException, IoTDBConnectionException {
     try {
-      if (operationHandle != null) {
-        TSCloseOperationReq closeReq = new TSCloseOperationReq(operationHandle, queryId);
-        TSStatus closeResp = client.closeOperation(closeReq);
-        RpcUtils.verifySuccess(closeResp);
-      }
-    } catch (IoTDBRPCException e) {
-      throw new SQLException("Error occurs for close opeation in server side. The reason is " + e);
+      ioTDBRpcDataSet.close();
     } catch (TException e) {
-      throw new SQLException(
-          "Error occurs when connecting to server for close operation, because: " + e);
+      throw new IoTDBConnectionException(e.getMessage());
+    }
+  }
+
+  public DataIterator iterator() {
+    return new DataIterator();
+  }
+
+  public class DataIterator {
+
+    public boolean next() throws StatementExecutionException, IoTDBConnectionException {
+      return ioTDBRpcDataSet.next();
+    }
+
+    public boolean isNull(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.isNull(columnIndex);
+    }
+
+    public boolean isNull(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.isNull(columnName);
+    }
+
+    public boolean getBoolean(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getBoolean(columnIndex);
+    }
+
+    public boolean getBoolean(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getBoolean(columnName);
+    }
+
+    public double getDouble(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getDouble(columnIndex);
+    }
+
+    public double getDouble(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getDouble(columnName);
+    }
+
+    public float getFloat(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getFloat(columnIndex);
+    }
+
+    public float getFloat(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getFloat(columnName);
+    }
+
+    public int getInt(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getInt(columnIndex);
+    }
+
+    public int getInt(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getInt(columnName);
+    }
+
+    public long getLong(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getLong(columnIndex);
+    }
+
+    public long getLong(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getLong(columnName);
+    }
+
+    public Object getObject(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getObject(columnIndex);
+    }
+
+    public Object getObject(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getObject(columnName);
+    }
+
+    public String getString(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getString(columnIndex);
+    }
+
+    public String getString(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getString(columnName);
+    }
+
+    public Timestamp getTimestamp(int columnIndex) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getTimestamp(columnIndex);
+    }
+
+    public Timestamp getTimestamp(String columnName) throws StatementExecutionException {
+      return ioTDBRpcDataSet.getTimestamp(columnName);
+    }
+
+    public int findColumn(String columnName) {
+      return ioTDBRpcDataSet.findColumn(columnName);
     }
   }
 }

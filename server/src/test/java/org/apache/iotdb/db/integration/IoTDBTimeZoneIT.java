@@ -25,7 +25,6 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import org.apache.iotdb.db.service.IoTDB;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.jdbc.Config;
 import org.apache.iotdb.jdbc.IoTDBConnection;
@@ -48,20 +47,16 @@ public class IoTDBTimeZoneIT {
       "1514779203000,8", "1514782804000,5", "1514782805000,7", "1514782806000,9",
       "1514782807000,10",
       "1514782808000,11", "1514782809000,12", "1514782810000,13", "1514789200000,6",};
-  private IoTDB daemon;
 
   @Before
   public void setUp() throws Exception {
     EnvironmentUtils.closeStatMonitor();
-    daemon = IoTDB.getInstance();
-    daemon.active();
     EnvironmentUtils.envSetUp();
     createTimeseries();
   }
 
   @After
   public void tearDown() throws Exception {
-    daemon.stop();
     EnvironmentUtils.cleanEnv();
   }
 
@@ -116,10 +111,14 @@ public class IoTDBTimeZoneIT {
 
       ResultSet resultSet = statement.getResultSet();
       int cnt = 0;
-      while (resultSet.next()) {
-        String ans = resultSet.getString(TIMESTAMP_STR) + "," + resultSet.getString(tz1);
-        Assert.assertEquals(retArray[cnt], ans);
-        cnt++;
+      try {
+        while (resultSet.next()) {
+          String ans = resultSet.getString(TIMESTAMP_STR) + "," + resultSet.getString(tz1);
+          Assert.assertEquals(retArray[cnt], ans);
+          cnt++;
+        }
+      } finally {
+        resultSet.close();
       }
       Assert.assertEquals(13, cnt);
     }

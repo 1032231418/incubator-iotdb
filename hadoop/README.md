@@ -47,7 +47,7 @@ With this connector, you can
 
 |Hadoop Version | Java Version | TsFile Version|
 |-------------  | ------------ |------------ |
-| `2.7.3`       | `1.8`        | `0.8.0-SNAPSHOT`|
+| `2.7.3`       | `1.8`        | `0.10.0`|
 
 > Note: For more information about how to download and use TsFile, please see the following link: https://github.com/apache/incubator-iotdb/tree/master/tsfile.
 
@@ -66,7 +66,7 @@ With this connector, you can
 
 TSFInputFormat extract data from tsfile and format them into records of `MapWritable`.
 
-Supposing that we want to extract data of the device named `d1` which has three sensors named `s1`, `s2`, `s3`.
+Supposing that we want to extract data of the device named `d1` which has three measurements named `s1`, `s2`, `s3`.
 
 `s1`'s type is `BOOLEAN`, `s2`'s type is `DOUBLE`, `s3`'s type is `TEXT`.
 

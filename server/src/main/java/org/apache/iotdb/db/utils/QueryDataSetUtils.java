@@ -22,6 +22,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.LinkedList;
 import java.util.List;
 import org.apache.iotdb.db.tools.watermark.WatermarkEncoder;
 import org.apache.iotdb.service.rpc.thrift.TSQueryDataSet;
@@ -38,6 +39,8 @@ import org.apache.iotdb.tsfile.utils.BytesUtils;
  */
 public class QueryDataSetUtils {
 
+  private static final int flag = 0x01;
+
   private QueryDataSetUtils() {
   }
 
@@ -45,7 +48,7 @@ public class QueryDataSetUtils {
    * convert query data set by fetch size.
    *
    * @param queryDataSet -query dataset
-   * @param fetchSize -fetch size
+   * @param fetchSize    -fetch size
    * @return -convert query dataset
    */
   public static TSQueryDataSet convertQueryDataSetByFetchSize(QueryDataSet queryDataSet,
@@ -53,12 +56,14 @@ public class QueryDataSetUtils {
     return convertQueryDataSetByFetchSize(queryDataSet, fetchSize, null);
   }
 
+  @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
   public static TSQueryDataSet convertQueryDataSetByFetchSize(QueryDataSet queryDataSet,
       int fetchSize, WatermarkEncoder watermarkEncoder) throws IOException {
     List<TSDataType> dataTypes = queryDataSet.getDataTypes();
     int columnNum = dataTypes.size();
     TSQueryDataSet tsQueryDataSet = new TSQueryDataSet();
-    int columnNumWithTime = columnNum + 1;
+    // one time column and each value column has a actual value buffer and a bitmap value to indicate whether it is a null
+    int columnNumWithTime = columnNum * 2 + 1;
     DataOutputStream[] dataOutputStreams = new DataOutputStream[columnNumWithTime];
     ByteArrayOutputStream[] byteArrayOutputStreams = new ByteArrayOutputStream[columnNumWithTime];
     for (int i = 0; i < columnNumWithTime; i++) {
@@ -67,10 +72,11 @@ public class QueryDataSetUtils {
     }
 
     int rowCount = 0;
-    int valueOccupation = 0;
+    int[] valueOccupation = new int[columnNum];
+    // used to record a bitmap for every 8 row record
+    int[] bitmap = new int[columnNum];
     for (int i = 0; i < fetchSize; i++) {
       if (queryDataSet.hasNext()) {
-        rowCount++;
         RowRecord rowRecord = queryDataSet.next();
         if (watermarkEncoder != null) {
           rowRecord = watermarkEncoder.encodeRecord(rowRecord);
@@ -80,37 +86,37 @@ public class QueryDataSetUtils {
         List<Field> fields = rowRecord.getFields();
         for (int k = 0; k < fields.size(); k++) {
           Field field = fields.get(k);
-          DataOutputStream dataOutputStream = dataOutputStreams[k + 1]; // DO NOT FORGET +1
-          if (field.getDataType() == null) {
-            dataOutputStream.writeBoolean(true); // is_empty true
+          DataOutputStream dataOutputStream = dataOutputStreams[2 * k + 1]; // DO NOT FORGET +1
+          if (field == null || field.getDataType() == null) {
+            bitmap[k] = (bitmap[k] << 1);
           } else {
-            dataOutputStream.writeBoolean(false); // is_empty false
+            bitmap[k] = (bitmap[k] << 1) | flag;
             TSDataType type = field.getDataType();
             switch (type) {
               case INT32:
                 dataOutputStream.writeInt(field.getIntV());
-                valueOccupation += 4;
+                valueOccupation[k] += 4;
                 break;
               case INT64:
                 dataOutputStream.writeLong(field.getLongV());
-                valueOccupation += 8;
+                valueOccupation[k] += 8;
                 break;
               case FLOAT:
                 dataOutputStream.writeFloat(field.getFloatV());
-                valueOccupation += 4;
+                valueOccupation[k] += 4;
                 break;
               case DOUBLE:
                 dataOutputStream.writeDouble(field.getDoubleV());
-                valueOccupation += 8;
+                valueOccupation[k] += 8;
                 break;
               case BOOLEAN:
                 dataOutputStream.writeBoolean(field.getBoolV());
-                valueOccupation += 1;
+                valueOccupation[k] += 1;
                 break;
               case TEXT:
                 dataOutputStream.writeInt(field.getBinaryV().getLength());
                 dataOutputStream.write(field.getBinaryV().getValues());
-                valueOccupation = valueOccupation + 4 + field.getBinaryV().getLength();
+                valueOccupation[k] = valueOccupation[k] + 4 + field.getBinaryV().getLength();
                 break;
               default:
                 throw new UnSupportedDataTypeException(
@@ -118,25 +124,56 @@ public class QueryDataSetUtils {
             }
           }
         }
+        rowCount++;
+        if (rowCount % 8 == 0) {
+          for (int j = 0; j < bitmap.length; j++) {
+            DataOutputStream dataBitmapOutputStream = dataOutputStreams[2 * (j + 1)];
+            dataBitmapOutputStream.writeByte(bitmap[j]);
+            // we should clear the bitmap every 8 row record
+            bitmap[j] = 0;
+          }
+        }
       } else {
         break;
       }
     }
 
-    // calculate total valueOccupation
-    valueOccupation += rowCount * 8; // note the timestamp column needn't the boolean is_empty
-    valueOccupation += rowCount * dataTypes.size(); // for all is_empty
-
-    ByteBuffer valueBuffer = ByteBuffer.allocate(valueOccupation);
-    for (ByteArrayOutputStream byteArrayOutputStream : byteArrayOutputStreams) {
-      valueBuffer.put(byteArrayOutputStream.toByteArray());
+    // feed the remaining bitmap
+    int remaining = rowCount % 8;
+    if (remaining != 0) {
+      for (int j = 0; j < bitmap.length; j++) {
+        DataOutputStream dataBitmapOutputStream = dataOutputStreams[2 * (j + 1)];
+        dataBitmapOutputStream.writeByte(bitmap[j] << (8 - remaining));
+      }
     }
-    valueBuffer.flip(); // PAY ATTENTION TO HERE
-    tsQueryDataSet.setValues(valueBuffer);
-    tsQueryDataSet.setRowCount(rowCount);
+
+    // calculate the time buffer size
+    int timeOccupation = rowCount * 8;
+    ByteBuffer timeBuffer = ByteBuffer.allocate(timeOccupation);
+    timeBuffer.put(byteArrayOutputStreams[0].toByteArray());
+    timeBuffer.flip();
+    tsQueryDataSet.setTime(timeBuffer);
+
+    // calculate the bitmap buffer size
+    int bitmapOccupation = rowCount / 8 + (rowCount % 8 == 0 ? 0 : 1);
+
+    List<ByteBuffer> bitmapList = new LinkedList<>();
+    List<ByteBuffer> valueList = new LinkedList<>();
+    for (int i = 1; i < byteArrayOutputStreams.length; i += 2) {
+      ByteBuffer valueBuffer = ByteBuffer.allocate(valueOccupation[(i - 1) / 2]);
+      valueBuffer.put(byteArrayOutputStreams[i].toByteArray());
+      valueBuffer.flip();
+      valueList.add(valueBuffer);
+
+      ByteBuffer bitmapBuffer = ByteBuffer.allocate(bitmapOccupation);
+      bitmapBuffer.put(byteArrayOutputStreams[i + 1].toByteArray());
+      bitmapBuffer.flip();
+      bitmapList.add(bitmapBuffer);
+    }
+    tsQueryDataSet.setBitmapList(bitmapList);
+    tsQueryDataSet.setValueList(valueList);
     return tsQueryDataSet;
   }
-
 
   public static long[] readTimesFromBuffer(ByteBuffer buffer, int size) {
     long[] times = new long[size];
@@ -157,10 +194,11 @@ public class QueryDataSetUtils {
   }
 
   /**
-   * @param buffer data values
+   * @param buffer  data values
    * @param columns column number
-   * @param size value count in each column
+   * @param size    value count in each column
    */
+  @SuppressWarnings("squid:S3776") // Suppress high Cognitive Complexity warning
   public static Object[] readValuesFromBuffer(ByteBuffer buffer, TSDataType[] types,
       int columns, int size) {
     Object[] values = new Object[columns];

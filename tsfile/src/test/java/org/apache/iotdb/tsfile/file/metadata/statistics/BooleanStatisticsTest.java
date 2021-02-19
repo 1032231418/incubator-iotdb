@@ -18,11 +18,10 @@
  */
 package org.apache.iotdb.tsfile.file.metadata.statistics;
 
-import static org.junit.Assert.assertEquals;
+import org.junit.Test;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-
-import org.junit.Test;
 
 public class BooleanStatisticsTest {
 
@@ -35,17 +34,18 @@ public class BooleanStatisticsTest {
     assertFalse(booleanStatistics.isEmpty());
     booleanStatistics.updateStats(false);
     assertFalse(booleanStatistics.isEmpty());
-    assertTrue(booleanStatistics.getMax());
-    assertFalse(booleanStatistics.getMin());
-    assertEquals(0, booleanStatistics.getSum(), maxError);
-    assertTrue(booleanStatistics.getFirst());
-    assertFalse(booleanStatistics.getLast());
+    assertTrue(booleanStatistics.getFirstValue());
+    assertFalse(booleanStatistics.getLastValue());
   }
 
   @Test
   public void testMerge() {
     Statistics<Boolean> booleanStats1 = new BooleanStatistics();
+    booleanStats1.setStartTime(0);
+    booleanStats1.setEndTime(2);
     Statistics<Boolean> booleanStats2 = new BooleanStatistics();
+    booleanStats2.setStartTime(3);
+    booleanStats2.setEndTime(5);
 
     booleanStats1.updateStats(false);
     booleanStats1.updateStats(false);
@@ -55,17 +55,29 @@ public class BooleanStatisticsTest {
     Statistics<Boolean> booleanStats3 = new BooleanStatistics();
     booleanStats3.mergeStatistics(booleanStats1);
     assertFalse(booleanStats3.isEmpty());
-    assertFalse(booleanStats3.getMax());
-    assertFalse(booleanStats3.getMin());
-    assertEquals(0,booleanStats3.getSum(), maxError);
-    assertFalse(booleanStats3.getFirst());
-    assertFalse(booleanStats3.getLast());
+    assertFalse(booleanStats3.getFirstValue());
+    assertFalse(booleanStats3.getLastValue());
 
     booleanStats3.mergeStatistics(booleanStats2);
-    assertTrue(booleanStats3.getMax());
-    assertFalse(booleanStats3.getMin());
-    assertEquals(0, booleanStats3.getSum(), maxError);
-    assertFalse(booleanStats3.getFirst());
-    assertTrue(booleanStats3.getLast());
+    assertFalse(booleanStats3.getFirstValue());
+    assertTrue(booleanStats3.getLastValue());
+
+    // unseq merge
+    Statistics<Boolean> booleanStats4 = new BooleanStatistics();
+    booleanStats4.setStartTime(0);
+    booleanStats4.setEndTime(5);
+    booleanStats4.updateStats(true);
+
+    booleanStats3.mergeStatistics(booleanStats4);
+    assertTrue(booleanStats3.getFirstValue());
+    assertTrue(booleanStats3.getLastValue());
+
+    Statistics<Boolean> booleanStats5 = new BooleanStatistics();
+    booleanStats5.setStartTime(1);
+    booleanStats5.setEndTime(4);
+    booleanStats5.updateStats(false);
+    booleanStats3.mergeStatistics(booleanStats5);
+    assertTrue(booleanStats3.getFirstValue());
+    assertTrue(booleanStats3.getLastValue());
   }
 }

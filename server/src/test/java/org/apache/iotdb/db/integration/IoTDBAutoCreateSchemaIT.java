@@ -19,9 +19,13 @@
 
 package org.apache.iotdb.db.integration;
 
-import org.apache.iotdb.db.conf.IoTDBConfig;
-import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.service.IoTDB;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.Statement;
+import org.apache.iotdb.db.constant.TestConstant;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.jdbc.Config;
 import org.junit.After;
@@ -29,37 +33,21 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.Statement;
-
 /**
  * Notice that, all test begins with "IoTDB" is integration test. All test which will start the IoTDB server should be
  * defined as integration test.
  */
 public class IoTDBAutoCreateSchemaIT {
 
-  private static IoTDB daemon;
-
-  private static IoTDBConfig conf = IoTDBDescriptor.getInstance().getConfig();
-
   @Before
   public void setUp() throws Exception {
     EnvironmentUtils.closeStatMonitor();
-    daemon = IoTDB.getInstance();
-    daemon.active();
     EnvironmentUtils.envSetUp();
-    conf.setAutoCreateSchemaEnabled(true);
   }
 
   @After
   public void tearDown() throws Exception {
-    daemon.stop();
     EnvironmentUtils.cleanEnv();
-    conf.setAutoCreateSchemaEnabled(false);
   }
 
   /**
@@ -131,7 +119,7 @@ public class IoTDBAutoCreateSchemaIT {
             result = "";
             while (resultSet.next()) {
               for (int i = 1; i <= count; i++) {
-                if (now_start > 0L && column[i - 1] == Constant.TIMESTAMP_STR) {
+                if (now_start > 0L && column[i - 1].equals(TestConstant.TIMESTAMP_STR)) {
                   String timestr = resultSet.getString(i);
                   Long tn = Long.valueOf(timestr);
                   Long now = System.currentTimeMillis();

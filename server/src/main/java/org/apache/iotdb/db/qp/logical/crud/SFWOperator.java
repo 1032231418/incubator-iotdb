@@ -19,8 +19,8 @@
 package org.apache.iotdb.db.qp.logical.crud;
 
 import java.util.List;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.qp.logical.RootOperator;
-import org.apache.iotdb.tsfile.read.common.Path;
 
 /**
  * SFWOperator(select-from-where) includes four subclass: INSERT,DELETE,UPDATE,QUERY. All of these
@@ -32,6 +32,8 @@ public abstract class SFWOperator extends RootOperator {
   private FromOperator fromOperator;
   private FilterOperator filterOperator;
   private boolean hasAggregation = false;
+  private boolean hasUdf = false;
+  private boolean lastQuery = false;
 
   public SFWOperator(int tokenIntType) {
     super(tokenIntType);
@@ -55,8 +57,14 @@ public abstract class SFWOperator extends RootOperator {
    */
   public void setSelectOperator(SelectOperator sel) {
     this.selectOperator = sel;
-    if (!sel.getAggregations().isEmpty()) {
+    if (sel.hasAggregation()) {
       hasAggregation = true;
+    }
+    if (sel.isUdfQuery()) {
+      hasUdf = true;
+    }
+    if (sel.isLastQuery()) {
+      lastQuery = true;
     }
   }
 
@@ -73,15 +81,19 @@ public abstract class SFWOperator extends RootOperator {
    *
    * @return - a list of seriesPath
    */
-  public List<Path> getSelectedPaths() {
-    List<Path> suffixPaths = null;
-    if (selectOperator != null) {
-      suffixPaths = selectOperator.getSuffixPaths();
-    }
-    return suffixPaths;
+  public List<PartialPath> getSelectedPaths() {
+    return selectOperator != null ? selectOperator.getSuffixPaths() : null;
   }
 
   public boolean hasAggregation() {
     return hasAggregation;
+  }
+
+  public boolean hasUdf() {
+    return hasUdf;
+  }
+
+  public boolean isLastQuery() {
+    return lastQuery;
   }
 }

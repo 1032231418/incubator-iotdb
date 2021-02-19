@@ -18,14 +18,20 @@
  */
 package org.apache.iotdb.db.engine.memtable;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import org.apache.iotdb.db.engine.modification.Deletion;
 import org.apache.iotdb.db.engine.querycontext.ReadOnlyMemChunk;
+import org.apache.iotdb.db.exception.WriteProcessException;
+import org.apache.iotdb.db.exception.metadata.MetadataException;
 import org.apache.iotdb.db.exception.query.QueryProcessException;
-import org.apache.iotdb.db.qp.physical.crud.BatchInsertPlan;
-import org.apache.iotdb.db.qp.physical.crud.InsertPlan;
+import org.apache.iotdb.db.metadata.PartialPath;
+import org.apache.iotdb.db.qp.physical.crud.InsertRowPlan;
+import org.apache.iotdb.db.qp.physical.crud.InsertTabletPlan;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.iotdb.tsfile.read.common.TimeRange;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
 /**
  * IMemTable is designed to store data points which are not flushed into TsFile yet. An instance of
@@ -38,10 +44,10 @@ public interface IMemTable {
 
   Map<String, Map<String, IWritableMemChunk>> getMemTableMap();
 
-  void write(String deviceId, String measurement, TSDataType dataType,
+  void write(String deviceId, String measurement, MeasurementSchema schema,
       long insertTime, Object objectValue);
 
-  void write(BatchInsertPlan batchInsertPlan, List<Integer> indexes);
+  void write(InsertTabletPlan insertTabletPlan, int start, int end);
 
   /**
    * @return the number of points
@@ -53,12 +59,38 @@ public interface IMemTable {
    */
   long memSize();
 
-  void insert(InsertPlan insertPlan) throws QueryProcessException;
+  /**
+   * only used when mem control enabled
+   */
+  void addTVListRamCost(long cost);
 
-  void insertBatch(BatchInsertPlan batchInsertPlan, List<Integer> indexes) throws QueryProcessException;
+  /**
+   * only used when mem control enabled
+   */
+  long getTVListsRamCost();
+
+  /**
+   * only used when mem control enabled
+   * @return whether the average number of points in each WritableChunk reaches the threshold
+   */
+  boolean reachTotalPointNumThreshold();
+
+  int getSeriesNumber();
+
+  long getTotalPointsNum();
+
+
+  void insert(InsertRowPlan insertRowPlan);
+
+  /**
+   * [start, end)
+   */
+  void insertTablet(InsertTabletPlan insertTabletPlan, int start, int end)
+      throws WriteProcessException;
 
   ReadOnlyMemChunk query(String deviceId, String measurement, TSDataType dataType,
-      Map<String, String> props, long timeLowerBound);
+      TSEncoding encoding, Map<String, String> props, long timeLowerBound, List<TimeRange> deletionList)
+      throws IOException, QueryProcessException, MetadataException;
 
   /**
    * putBack all the memory resources.
@@ -69,21 +101,14 @@ public interface IMemTable {
 
   /**
    * Delete data in it whose timestamp <= 'timestamp' and belonging to timeseries
-   * deviceId.measurementId. Only called for non-flushing MemTable.
+   * path. Only called for non-flushing MemTable.
    *
-   * @param deviceId the deviceId of the timeseries to be deleted.
-   * @param measurementId the measurementId of the timeseries to be deleted.
-   * @param timestamp the upper-bound of deletion time.
+   * @param path the PartialPath the timeseries to be deleted.
+   * @param devicePath the device path of the timeseries to be deleted.
+   * @param startTimestamp the lower-bound of deletion time.
+   * @param endTimestamp the upper-bound of deletion time
    */
-  void delete(String deviceId, String measurementId, long timestamp);
-
-  /**
-   * Delete data in it whose timestamp <= 'timestamp' and belonging to timeseries
-   * deviceId.measurementId. Only called for flushing MemTable.
-   *
-   * @param deletion and object representing this deletion
-   */
-  void delete(Deletion deletion);
+  void delete(PartialPath path, PartialPath devicePath, long startTimestamp, long endTimestamp);
 
   /**
    * Make a copy of this MemTable.
@@ -94,9 +119,25 @@ public interface IMemTable {
 
   boolean isSignalMemTable();
 
-  long getVersion();
-
-  void setVersion(long version);
-
   void release();
+
+  /**
+   * must guarantee the device exists in the work memtable
+   * only used when mem control enabled
+   */
+  boolean checkIfChunkDoesNotExist(String deviceId, String measurement);
+
+  /**
+   * only used when mem control enabled
+   */
+  int getCurrentChunkPointNum(String deviceId, String measurement);
+
+  /**
+   * only used when mem control enabled
+   */
+  void addTextDataSize(long textDataIncrement);
+
+  long getMaxPlanIndex();
+
+  long getMinPlanIndex();
 }

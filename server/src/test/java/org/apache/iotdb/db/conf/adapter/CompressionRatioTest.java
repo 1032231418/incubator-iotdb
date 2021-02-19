@@ -27,7 +27,6 @@ import java.util.Locale;
 import org.apache.commons.io.FileUtils;
 import org.apache.iotdb.db.conf.IoTDBConfig;
 import org.apache.iotdb.db.conf.IoTDBDescriptor;
-import org.apache.iotdb.db.service.IoTDB;
 import org.apache.iotdb.db.utils.EnvironmentUtils;
 import org.apache.iotdb.db.utils.FilePathUtils;
 import org.junit.After;
@@ -35,8 +34,6 @@ import org.junit.Before;
 import org.junit.Test;
 
 public class CompressionRatioTest {
-
-  private static IoTDB daemon;
 
   private static final IoTDBConfig CONFIG = IoTDBDescriptor.getInstance().getConfig();
 
@@ -48,18 +45,14 @@ public class CompressionRatioTest {
   @Before
   public void setUp() throws Exception {
     EnvironmentUtils.closeStatMonitor();
-    daemon = IoTDB.getInstance();
-    daemon.active();
     EnvironmentUtils.envSetUp();
     FileUtils.forceMkdir(new File(directory));
     compressionRatio.reset();
     compressionRatio.restore();
-    IoTDBDescriptor.getInstance().getConfig().setEnableParameterAdapter(true);
   }
 
   @After
   public void tearDown() throws Exception {
-    daemon.stop();
     EnvironmentUtils.cleanEnv();
   }
 

@@ -19,12 +19,12 @@
 package org.apache.iotdb.db.auth;
 
 import java.util.List;
+import org.apache.iotdb.db.auth.authorizer.BasicAuthorizer;
 import org.apache.iotdb.db.auth.authorizer.IAuthorizer;
-import org.apache.iotdb.db.auth.authorizer.LocalFileAuthorizer;
 import org.apache.iotdb.db.auth.entity.PrivilegeType;
 import org.apache.iotdb.db.conf.IoTDBConstant;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.qp.logical.Operator;
-import org.apache.iotdb.tsfile.read.common.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,14 +40,14 @@ public class AuthorityChecker {
   /**
    * check permission.
    *
-   * @param username username
-   * @param paths paths in List structure
-   * @param type Operator type
+   * @param username   username
+   * @param paths      paths in List structure
+   * @param type       Operator type
    * @param targetUser target user
    * @return if permission-check is passed
    * @throws AuthException Authentication Exception
    */
-  public static boolean check(String username, List<Path> paths, Operator.OperatorType type,
+  public static boolean check(String username, List<PartialPath> paths, Operator.OperatorType type,
       String targetUser)
       throws AuthException {
     if (SUPER_USER.equals(username)) {
@@ -63,7 +63,7 @@ public class AuthorityChecker {
       return true;
     }
     if (!paths.isEmpty()) {
-      for (Path path : paths) {
+      for (PartialPath path : paths) {
         if (!checkOnePath(username, path, permission)) {
           return false;
         }
@@ -74,9 +74,9 @@ public class AuthorityChecker {
     return true;
   }
 
-  private static boolean checkOnePath(String username, Path path, int permission)
+  private static boolean checkOnePath(String username, PartialPath path, int permission)
       throws AuthException {
-    IAuthorizer authorizer = LocalFileAuthorizer.getInstance();
+    IAuthorizer authorizer = BasicAuthorizer.getInstance();
     try {
       String fullPath = path == null ? IoTDBConstant.PATH_ROOT : path.getFullPath();
       if (authorizer.checkUserPrivileges(username, fullPath, permission)) {
@@ -117,25 +117,26 @@ public class AuthorityChecker {
       case CREATE_TIMESERIES:
         return PrivilegeType.CREATE_TIMESERIES.ordinal();
       case DELETE_TIMESERIES:
+      case DELETE:
+      case DROP_INDEX:
         return PrivilegeType.DELETE_TIMESERIES.ordinal();
       case QUERY:
       case SELECT:
       case FILTER:
-      case GROUPBY:
+      case GROUPBYTIME:
       case SEQTABLESCAN:
       case TABLESCAN:
-      case INDEXQUERY:
+      case QUERY_INDEX:
       case MERGEQUERY:
       case AGGREGATION:
+      case UDAF:
+      case UDTF:
+      case LAST:
         return PrivilegeType.READ_TIMESERIES.ordinal();
-      case DELETE:
-        return PrivilegeType.DELETE_TIMESERIES.ordinal();
       case INSERT:
       case LOADDATA:
-      case INDEX:
+      case CREATE_INDEX:
         return PrivilegeType.INSERT_TIMESERIES.ordinal();
-      case UPDATE:
-        return PrivilegeType.UPDATE_TIMESERIES.ordinal();
       case LIST_ROLE:
       case LIST_ROLE_USERS:
       case LIST_ROLE_PRIVILEGE:
@@ -144,6 +145,10 @@ public class AuthorityChecker {
       case LIST_USER_ROLES:
       case LIST_USER_PRIVILEGE:
         return PrivilegeType.LIST_USER.ordinal();
+      case CREATE_FUNCTION:
+        return PrivilegeType.CREATE_FUNCTION.ordinal();
+      case DROP_FUNCTION:
+        return PrivilegeType.DROP_FUNCTION.ordinal();
       case AUTHOR:
       case METADATA:
       case BASIC_FUNC:
@@ -156,7 +161,6 @@ public class AuthorityChecker {
       case MERGEJOIN:
       case NULL:
       case ORDERBY:
-      case PROPERTY:
       case SFW:
       case UNION:
         logger.error("Illegal operator type authorization : {}", type);
@@ -164,6 +168,5 @@ public class AuthorityChecker {
       default:
         return -1;
     }
-
   }
 }

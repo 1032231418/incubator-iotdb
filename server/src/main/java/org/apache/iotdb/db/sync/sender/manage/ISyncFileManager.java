@@ -55,13 +55,18 @@ public interface ISyncFileManager {
    */
   void getValidFiles(String dataDir) throws IOException;
 
-  Map<String, Set<File>> getCurrentSealedLocalFilesMap();
+  /*
+   * the following 4 maps share same map structure
+   * logicalSg -> <virtualSg, <timeRangeId, tsfiles>>
+   */
+  Map<String, Map<Long, Map<Long, Set<File>>>> getCurrentSealedLocalFilesMap();
 
-  Map<String, Set<File>> getLastLocalFilesMap();
+  Map<String, Map<Long, Map<Long, Set<File>>>> getLastLocalFilesMap();
 
-  Map<String, Set<File>> getDeletedFilesMap();
+  Map<String, Map<Long, Map<Long, Set<File>>>> getDeletedFilesMap();
 
-  Map<String, Set<File>> getToBeSyncedFilesMap();
+  Map<String, Map<Long, Map<Long, Set<File>>>> getToBeSyncedFilesMap();
 
-  Set<String> getAllSGs();
+  // logicalSg -> <virtualSg, Set<timeRangeId>>
+  Map<String, Map<Long, Set<Long>>> getAllSGs();
 }

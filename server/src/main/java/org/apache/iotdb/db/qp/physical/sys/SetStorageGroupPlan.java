@@ -18,36 +18,82 @@
  */
 package org.apache.iotdb.db.qp.physical.sys;
 
-import java.util.ArrayList;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.List;
-
+import java.util.Objects;
+import org.apache.iotdb.db.exception.metadata.IllegalPathException;
+import org.apache.iotdb.db.metadata.PartialPath;
 import org.apache.iotdb.db.qp.logical.Operator;
 import org.apache.iotdb.db.qp.physical.PhysicalPlan;
-import org.apache.iotdb.tsfile.read.common.Path;
 
 public class SetStorageGroupPlan extends PhysicalPlan {
-  private Path path;
-  
-  public SetStorageGroupPlan(Path path) {
+
+  private PartialPath path;
+
+  public SetStorageGroupPlan() {
+    super(false, Operator.OperatorType.SET_STORAGE_GROUP);
+  }
+
+  public SetStorageGroupPlan(PartialPath path) {
     super(false, Operator.OperatorType.SET_STORAGE_GROUP);
     this.path = path;
   }
   
-  public Path getPath() {
+  public PartialPath getPath() {
     return path;
   }
 
-  public void setPath(Path path) {
+  public void setPath(PartialPath path) {
     this.path = path;
   }
-  
+
   @Override
-  public List<Path> getPaths() {
-    List<Path> ret = new ArrayList<>();
-    if (path != null) {
-      ret.add(path);
-    }
-    return ret;
+  public List<PartialPath> getPaths() {
+    return path != null ? Collections.singletonList(path) : Collections.emptyList();
   }
 
+  @Override
+  public void serialize(DataOutputStream stream) throws IOException {
+    stream.write((byte) PhysicalPlanType.SET_STORAGE_GROUP.ordinal());
+    putString(stream, path.getFullPath());
+    stream.writeLong(index);
+  }
+
+  @Override
+  public void serialize(ByteBuffer buffer) {
+    buffer.put((byte) PhysicalPlanType.SET_STORAGE_GROUP.ordinal());
+    putString(buffer, path.getFullPath());
+    buffer.putLong(index);
+  }
+
+  @Override
+  public void deserialize(ByteBuffer buffer) throws IllegalPathException {
+    path = new PartialPath(readString(buffer));
+    this.index = buffer.getLong();
+  }
+
+  @Override
+  public String toString() {
+    return "SetStorageGroup{" + path + '}';
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    SetStorageGroupPlan that = (SetStorageGroupPlan) o;
+    return Objects.equals(path, that.path);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(path);
+  }
 }

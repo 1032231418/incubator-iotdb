@@ -20,7 +20,7 @@
 package org.apache.iotdb.db.engine.modification;
 
 import java.util.Objects;
-import org.apache.iotdb.tsfile.read.common.Path;
+import org.apache.iotdb.db.metadata.PartialPath;
 
 /**
  * Modification represents an UPDATE or DELETE operation on a certain timeseries.
@@ -28,20 +28,20 @@ import org.apache.iotdb.tsfile.read.common.Path;
 public abstract class Modification {
 
   protected Type type;
-  protected Path path;
-  protected long versionNum;
+  protected PartialPath path;
+  protected long fileOffset;
 
-  Modification(Type type, Path path, long versionNum) {
+  Modification(Type type, PartialPath path, long fileOffset) {
     this.type = type;
     this.path = path;
-    this.versionNum = versionNum;
+    this.fileOffset = fileOffset;
   }
 
   public String getPathString() {
     return path.getFullPath();
   }
 
-  public Path getPath() {
+  public PartialPath getPath() {
     return path;
   }
 
@@ -53,16 +53,16 @@ public abstract class Modification {
     return path.getMeasurement();
   }
 
-  public void setPath(Path path) {
+  public void setPath(PartialPath path) {
     this.path = path;
   }
 
-  public long getVersionNum() {
-    return versionNum;
+  public long getFileOffset() {
+    return fileOffset;
   }
 
-  public void setVersionNum(long versionNum) {
-    this.versionNum = versionNum;
+  public void setFileOffset(long fileOffset) {
+    this.fileOffset = fileOffset;
   }
 
   public Type getType() {
@@ -87,11 +87,11 @@ public abstract class Modification {
     }
     Modification mod = (Modification) obj;
     return mod.type.equals(this.type) && mod.path.equals(this.path)
-            && mod.versionNum == this.versionNum;
+            && mod.fileOffset == this.fileOffset;
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(type, path, versionNum);
+    return Objects.hash(type, path, fileOffset);
   }
 }

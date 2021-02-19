@@ -16,146 +16,167 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iotdb.db.query.dataset.groupby;
 
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.List;
-import org.apache.iotdb.db.exception.path.PathException;
-import org.apache.iotdb.db.metadata.MManager;
-import org.apache.iotdb.db.query.factory.AggreFuncFactory;
-import org.apache.iotdb.db.query.aggregation.AggreResultData;
-import org.apache.iotdb.db.query.aggregation.AggregateFunction;
-import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
-import org.apache.iotdb.tsfile.read.common.Field;
+import java.util.Calendar;
+import org.apache.iotdb.db.qp.physical.crud.GroupByTimePlan;
+import org.apache.iotdb.db.query.context.QueryContext;
+import org.apache.iotdb.db.utils.TestOnly;
 import org.apache.iotdb.tsfile.read.common.Path;
+import org.apache.iotdb.tsfile.read.common.RowRecord;
 import org.apache.iotdb.tsfile.read.query.dataset.QueryDataSet;
 import org.apache.iotdb.tsfile.utils.Pair;
 
+
 public abstract class GroupByEngineDataSet extends QueryDataSet {
 
-  protected long jobId;
-  protected List<Path> selectedSeries;
-  private long unit;
-  private long origin;
-  private List<Pair<Long, Long>> mergedIntervals;
-
+  protected long queryId;
+  protected long interval;
+  protected long slidingStep;
+  // total query [startTime, endTime)
   protected long startTime;
   protected long endTime;
-  private int usedIndex;
-  protected List<AggregateFunction> functions;
+
+  // current interval [curStartTime, curEndTime)
+  protected long curStartTime;
+  protected long curEndTime;
   protected boolean hasCachedTimeInterval;
+
+  protected boolean leftCRightO;
+  private boolean isIntervalByMonth = false;
+  private boolean isSlidingStepByMonth = false;
+  protected int intervalTimes;
+  private static final long MS_TO_MONTH = 30 * 86400_000L;
+
+  public GroupByEngineDataSet() {
+  }
 
   /**
    * groupBy query.
    */
-  public GroupByEngineDataSet(long jobId, List<Path> paths, long unit, long origin,
-      List<Pair<Long, Long>> mergedIntervals) {
-    super(paths);
-    this.jobId = jobId;
-    this.selectedSeries = paths;
-    this.unit = unit;
-    this.origin = origin;
-    this.mergedIntervals = mergedIntervals;
-    this.functions = new ArrayList<>();
+  public GroupByEngineDataSet(QueryContext context, GroupByTimePlan groupByTimePlan) {
+    super(new ArrayList<>(groupByTimePlan.getDeduplicatedPaths()),
+        groupByTimePlan.getDeduplicatedDataTypes(), groupByTimePlan.isAscending());
 
-    // init group by time partition
-    this.usedIndex = 0;
-    this.hasCachedTimeInterval = false;
-    this.endTime = -1;
+    // find the startTime of the first aggregation interval
+    initGroupByEngineDataSetFields(context, groupByTimePlan);
   }
 
-  protected void initAggreFuction(List<String> aggres) throws PathException {
-    List<TSDataType> types = new ArrayList<>();
-    // construct AggregateFunctions
-    for (int i = 0; i < paths.size(); i++) {
-      TSDataType tsDataType = MManager.getInstance()
-          .getSeriesType(selectedSeries.get(i).getFullPath());
-      AggregateFunction function = AggreFuncFactory.getAggrFuncByName(aggres.get(i), tsDataType);
-      function.init();
-      functions.add(function);
-      types.add(function.getResultDataType());
+  protected void initGroupByEngineDataSetFields(QueryContext context,
+      GroupByTimePlan groupByTimePlan) {
+    this.queryId = context.getQueryId();
+    this.interval = groupByTimePlan.getInterval();
+    this.slidingStep = groupByTimePlan.getSlidingStep();
+    this.startTime = groupByTimePlan.getStartTime();
+    this.endTime = groupByTimePlan.getEndTime();
+    this.leftCRightO = groupByTimePlan.isLeftCRightO();
+    this.ascending = groupByTimePlan.isAscending();
+    this.isIntervalByMonth = groupByTimePlan.isIntervalByMonth();
+    this.isSlidingStepByMonth = groupByTimePlan.isSlidingStepByMonth();
+
+    if (isIntervalByMonth) {
+      interval = interval / MS_TO_MONTH;
     }
-    super.setDataTypes(types);
+
+    // find the startTime of the first aggregation interval
+    if (ascending) {
+      curStartTime = startTime;
+    } else {
+      long queryRange = endTime - startTime;
+      // calculate the total interval number
+      long intervalNum = (long) Math.ceil(queryRange / (double) slidingStep);
+      if (isSlidingStepByMonth) {
+        intervalTimes = (int) intervalNum - 1;
+        curStartTime = calcIntervalByMonth(intervalTimes * slidingStep / MS_TO_MONTH);
+      } else {
+        curStartTime = slidingStep * (intervalNum - 1) + startTime;
+      }
+    }
+
+    if (isSlidingStepByMonth) {
+      slidingStep = slidingStep / MS_TO_MONTH;
+    }
+
+    if (isIntervalByMonth) {
+      //calculate interval length by natural month based on curStartTime
+      //ie. startTIme = 1/31, interval = 1mo, curEndTime will be set to 2/29
+      curEndTime = Math.min(calcIntervalByMonth(interval + slidingStep * intervalTimes), endTime);
+    } else {
+      curEndTime = Math.min(curStartTime + interval, endTime);
+    }
+
+    this.hasCachedTimeInterval = true;
   }
 
   @Override
-  public boolean hasNext() {
+  public boolean hasNextWithoutConstraint() {
+    long curSlidingStep = slidingStep;
+    long curInterval = interval;
     // has cached
     if (hasCachedTimeInterval) {
       return true;
     }
 
-    // skip the intervals in coverage of last time-partition
-    while (usedIndex < mergedIntervals.size() && mergedIntervals.get(usedIndex).right < endTime) {
-      usedIndex++;
-    }
+    // for group by natural months addition
+    intervalTimes += ascending ? 1 : -1;
 
-    // end
-    if (usedIndex >= mergedIntervals.size()) {
-      return false;
-    }
-
-    // initialize the start-end time of next interval
-    if (endTime < mergedIntervals.get(usedIndex).left) {
-      // interval start time
-      startTime = mergedIntervals.get(usedIndex).left;
-      if (origin > startTime) {
-        endTime = origin - (origin - startTime) / unit * unit;
+    if (ascending) {
+      if (isSlidingStepByMonth) {
+        curStartTime = calcIntervalByMonth(slidingStep * intervalTimes);
       } else {
-        endTime = origin + (startTime - origin) / unit * unit + unit;
+        curStartTime += curSlidingStep;
       }
-      hasCachedTimeInterval = true;
-      return true;
+      //This is an open interval , [0-100)
+      if (curStartTime >= endTime) {
+        return false;
+      }
+    } else {
+      if (isSlidingStepByMonth) {
+        curStartTime = calcIntervalByMonth(slidingStep * intervalTimes);
+      } else {
+        curStartTime -= curSlidingStep;
+      }
+      if (curStartTime < startTime) {
+        return false;
+      }
     }
 
-    // current interval is not covered yet
-    if (endTime <= mergedIntervals.get(usedIndex).right) {
-      startTime = endTime;
-      endTime += unit;
-      hasCachedTimeInterval = true;
-      return true;
+    hasCachedTimeInterval = true;
+    if (isIntervalByMonth) {
+      curEndTime = Math.min(calcIntervalByMonth(intervalTimes * slidingStep + interval), endTime);
+    } else {
+      curEndTime = Math.min(curStartTime + curInterval, endTime);
     }
-    return false;
+    return true;
   }
 
   /**
-   * this method is only used in the test class to get the next time partition.
+   * add natural months based on the first starttime to avoid edge cases, ie 2/28
+   * @param numMonths numMonths is updated in hasNextWithoutConstraint()
+   * @return curStartTime
    */
+  public long calcIntervalByMonth(long numMonths) {
+    Calendar calendar = Calendar.getInstance();
+    calendar.setTimeInMillis(startTime);
+    calendar.add(Calendar.MONTH, (int) (numMonths));
+    return calendar.getTimeInMillis();
+  }
+
+  @Override
+  public abstract RowRecord nextWithoutConstraint() throws IOException;
+
+  public long getStartTime() {
+    return startTime;
+  }
+
+  @TestOnly
   public Pair<Long, Long> nextTimePartition() {
     hasCachedTimeInterval = false;
-    return new Pair<>(startTime, endTime);
+    return new Pair<>(curStartTime, curEndTime);
   }
 
-  protected Field getField(AggreResultData aggreResultData) {
-    if (!aggreResultData.isSetValue()) {
-      return new Field(null);
-    }
-    Field field = new Field(aggreResultData.getDataType());
-    switch (aggreResultData.getDataType()) {
-      case INT32:
-        field.setIntV(aggreResultData.getIntRet());
-        break;
-      case INT64:
-        field.setLongV(aggreResultData.getLongRet());
-        break;
-      case FLOAT:
-        field.setFloatV(aggreResultData.getFloatRet());
-        break;
-      case DOUBLE:
-        field.setDoubleV(aggreResultData.getDoubleRet());
-        break;
-      case BOOLEAN:
-        field.setBoolV(aggreResultData.isBooleanRet());
-        break;
-      case TEXT:
-        field.setBinaryV(aggreResultData.getBinaryRet());
-        break;
-      default:
-        throw new UnSupportedDataTypeException("UnSupported: " + aggreResultData.getDataType());
-    }
-    return field;
-  }
-
+  public abstract Pair<Long, Object> peekNextNotNullValue(Path path, int i)
+      throws IOException;
 }

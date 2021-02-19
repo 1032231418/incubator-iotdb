@@ -34,17 +34,21 @@ public class DoubleStatisticsTest {
     assertFalse(doubleStats.isEmpty());
     doubleStats.updateStats(2.32d);
     assertFalse(doubleStats.isEmpty());
-    assertEquals(2.32d, doubleStats.getMax(), maxError);
-    assertEquals(1.34d, doubleStats.getMin(), maxError);
-    assertEquals(2.32d + 1.34d, doubleStats.getSum(), maxError);
-    assertEquals(1.34d, doubleStats.getFirst(), maxError);
-    assertEquals(2.32d, doubleStats.getLast(), maxError);
+    assertEquals(2.32d, doubleStats.getMaxValue(), maxError);
+    assertEquals(1.34d, doubleStats.getMinValue(), maxError);
+    assertEquals(2.32d + 1.34d, doubleStats.getSumDoubleValue(), maxError);
+    assertEquals(1.34d, doubleStats.getFirstValue(), maxError);
+    assertEquals(2.32d, doubleStats.getLastValue(), maxError);
   }
 
   @Test
   public void testMerge() {
     Statistics<Double> doubleStats1 = new DoubleStatistics();
+    doubleStats1.setStartTime(0);
+    doubleStats1.setEndTime(2);
     Statistics<Double> doubleStats2 = new DoubleStatistics();
+    doubleStats2.setStartTime(3);
+    doubleStats2.setEndTime(5);
 
     doubleStats1.updateStats(1.34d);
     doubleStats1.updateStats(100.13453d);
@@ -54,18 +58,39 @@ public class DoubleStatisticsTest {
     Statistics<Double> doubleStats3 = new DoubleStatistics();
     doubleStats3.mergeStatistics(doubleStats1);
     assertFalse(doubleStats3.isEmpty());
-    assertEquals(100.13453d, doubleStats3.getMax(), maxError);
-    assertEquals(1.34d, doubleStats3.getMin(), maxError);
-    assertEquals(100.13453d + 1.34d, doubleStats3.getSum(), maxError);
-    assertEquals(1.34d, doubleStats3.getFirst(), maxError);
-    assertEquals(100.13453d, doubleStats3.getLast(), maxError);
+    assertEquals(100.13453d, doubleStats3.getMaxValue(), maxError);
+    assertEquals(1.34d, doubleStats3.getMinValue(), maxError);
+    assertEquals(100.13453d + 1.34d, doubleStats3.getSumDoubleValue(), maxError);
+    assertEquals(1.34d, doubleStats3.getFirstValue(), maxError);
+    assertEquals(100.13453d, doubleStats3.getLastValue(), maxError);
 
     doubleStats3.mergeStatistics(doubleStats2);
-    assertEquals(200.435d, doubleStats3.getMax(), maxError);
-    assertEquals(1.34d, doubleStats3.getMin(), maxError);
-    assertEquals(100.13453d + 1.34d + 200.435d, doubleStats3.getSum(), maxError);
-    assertEquals(1.34d, doubleStats3.getFirst(), maxError);
-    assertEquals(200.435d, doubleStats3.getLast(), maxError);
+    assertEquals(200.435d, doubleStats3.getMaxValue(), maxError);
+    assertEquals(1.34d, doubleStats3.getMinValue(), maxError);
+    assertEquals(100.13453d + 1.34d + 200.435d, doubleStats3.getSumDoubleValue(), maxError);
+    assertEquals(1.34d, doubleStats3.getFirstValue(), maxError);
+    assertEquals(200.435d, doubleStats3.getLastValue(), maxError);
+
+    // Unseq merge
+    Statistics<Double> doubleStats4 = new DoubleStatistics();
+    doubleStats4.setStartTime(0);
+    doubleStats4.setEndTime(5);
+    Statistics<Double> doubleStats5 = new DoubleStatistics();
+    doubleStats5.setStartTime(1);
+    doubleStats5.setEndTime(4);
+
+    doubleStats4.updateStats(122.34d);
+    doubleStats4.updateStats(125.34d);
+    doubleStats5.updateStats(111.1d);
+
+    doubleStats3.mergeStatistics(doubleStats4);
+    assertEquals(122.34d, doubleStats3.getFirstValue(), maxError);
+    assertEquals(125.34d, doubleStats3.getLastValue(), maxError);
+
+
+    doubleStats3.mergeStatistics(doubleStats5);
+    assertEquals(122.34d, doubleStats3.getFirstValue(), maxError);
+    assertEquals(125.34d, doubleStats3.getLastValue(), maxError);
   }
 
 }

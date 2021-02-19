@@ -21,22 +21,24 @@ package org.apache.iotdb.db.engine.memtable;
 
 import java.util.HashMap;
 import java.util.Map;
-
 import org.apache.iotdb.db.rescon.TVListAllocator;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
+import org.apache.iotdb.tsfile.write.schema.MeasurementSchema;
 
 public class PrimitiveMemTable extends AbstractMemTable {
 
   public PrimitiveMemTable() {
   }
 
+  public PrimitiveMemTable(boolean enableMemControl) {
+    this.disableMemControl = !enableMemControl;
+  }
   public PrimitiveMemTable(Map<String, Map<String, IWritableMemChunk>> memTableMap) {
     super(memTableMap);
   }
 
   @Override
-  protected IWritableMemChunk genMemSeries(TSDataType dataType) {
-    return new WritableMemChunk(dataType, TVListAllocator.getInstance().allocate(dataType));
+  protected IWritableMemChunk genMemSeries(MeasurementSchema schema) {
+    return new WritableMemChunk(schema, TVListAllocator.getInstance().allocate(schema.getType()));
   }
 
   @Override
@@ -52,11 +54,7 @@ public class PrimitiveMemTable extends AbstractMemTable {
   }
 
   @Override
-  public int hashCode() {return (int) getVersion();}
-
-  @Override
-  public boolean equals(Object obj) {
-    return this == obj;
+  public String toString() {
+    return "PrimitiveMemTable{planIndex=[" + getMinPlanIndex() +"," + getMaxPlanIndex() + "]}";
   }
-
 }

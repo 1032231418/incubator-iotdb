@@ -18,40 +18,50 @@
  */
 package org.apache.iotdb.jdbc;
 
-import org.apache.iotdb.service.rpc.thrift.TSIService.Iface;
-import org.apache.iotdb.service.rpc.thrift.TS_SessionHandle;
-
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
 import java.sql.Date;
-import java.sql.*;
+import java.sql.NClob;
+import java.sql.ParameterMetaData;
+import java.sql.PreparedStatement;
+import java.sql.Ref;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLXML;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
+import org.apache.iotdb.service.rpc.thrift.TSIService.Iface;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedStatement {
 
   private String sql;
   private static final String METHOD_NOT_SUPPORTED_STRING = "Method not supported";
+  private static final Logger logger = LoggerFactory.getLogger(IoTDBPreparedStatement.class);
 
   /**
    * save the SQL parameters as (paramLoc,paramValue) pairs.
    */
-  private final Map<Integer, String> parameters = new HashMap<>();
+  private final Map<Integer, String> parameters = new LinkedHashMap<>();
 
-  public IoTDBPreparedStatement(IoTDBConnection connection, Iface client,
-      TS_SessionHandle sessionHandle, ZoneId zoneId) throws SQLException{
-    super(connection, client, sessionHandle, zoneId);
-  }
-
-  public IoTDBPreparedStatement(IoTDBConnection connection, Iface client,
-      TS_SessionHandle sessionHandle, String sql,
+  IoTDBPreparedStatement(IoTDBConnection connection, Iface client,
+      Long sessionId, String sql,
       ZoneId zoneId) throws SQLException {
-    super(connection, client, sessionHandle, zoneId);
+    super(connection, client, sessionId, zoneId);
     this.sql = sql;
   }
 
@@ -61,7 +71,7 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
   }
 
   @Override
-  public void clearParameters() throws SQLException {
+  public void clearParameters() {
     this.parameters.clear();
   }
 
@@ -87,7 +97,83 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
 
   @Override
   public ParameterMetaData getParameterMetaData() throws SQLException {
-    throw new SQLException(METHOD_NOT_SUPPORTED_STRING);
+    return  new ParameterMetaData() {
+      @Override
+      public int getParameterCount() throws SQLException {
+        return parameters.size();
+      }
+      @Override
+      public int isNullable(int param) throws SQLException {
+        return ParameterMetaData.parameterNullableUnknown ;
+      }
+      @Override
+      public boolean isSigned(int param) throws SQLException {
+        try{
+          return Integer.parseInt(parameters.get(param))<0;
+        }
+        catch (Exception e){
+          return false;
+        }
+      }
+
+      @Override
+      public int getPrecision(int param) throws SQLException {
+        return parameters.get(param).length();
+      }
+
+      @Override
+      public int getScale(int param) throws SQLException {
+        try{
+          double d= Double.parseDouble(parameters.get(param));
+          if (d >= 1) { //we only need the fraction digits
+            d = d - (long) d;
+          }
+          if (d == 0) { //nothing to count
+            return 0;
+          }
+          d *= 10; //shifts 1 digit to left
+          int count = 1;
+          while (d - (long) d != 0) { //keeps shifting until there are no more fractions
+            d *= 10;
+            count++;
+          }
+          return count;
+        }
+        catch (Exception e){
+          return 0;
+        }
+      }
+
+      @Override
+      public int getParameterType(int param) throws SQLException {
+        return 0;
+      }
+
+      @Override
+      public String getParameterTypeName(int param) throws SQLException {
+        return null;
+      }
+
+      @Override
+      public String getParameterClassName(int param) throws SQLException {
+        return null;
+      }
+
+      @Override
+      public int getParameterMode(int param) throws SQLException {
+        return 0;
+      }
+
+      @Override
+      public <T> T unwrap(Class<T> iface) throws SQLException {
+        return null;
+      }
+
+      @Override
+      public boolean isWrapperFor(Class<?> iface) throws SQLException {
+        return false;
+      }
+    };
   }
 
   @Override
@@ -147,7 +233,7 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
   }
 
   @Override
-  public void setBoolean(int parameterIndex, boolean x) throws SQLException {
+  public void setBoolean(int parameterIndex, boolean x) {
     this.parameters.put(parameterIndex, Boolean.toString(x));
   }
 
@@ -204,22 +290,22 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
   }
 
   @Override
-  public void setDouble(int parameterIndex, double x) throws SQLException {
+  public void setDouble(int parameterIndex, double x) {
     this.parameters.put(parameterIndex, Double.toString(x));
   }
 
   @Override
-  public void setFloat(int parameterIndex, float x) throws SQLException {
+  public void setFloat(int parameterIndex, float x) {
     this.parameters.put(parameterIndex, Float.toString(x));
   }
 
   @Override
-  public void setInt(int parameterIndex, int x) throws SQLException {
+  public void setInt(int parameterIndex, int x) {
     this.parameters.put(parameterIndex, Integer.toString(x));
   }
 
   @Override
-  public void setLong(int parameterIndex, long x) throws SQLException {
+  public void setLong(int parameterIndex, long x) {
     this.parameters.put(parameterIndex, Long.toString(x));
   }
 
@@ -269,15 +355,15 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
     if (x instanceof String) {
       setString(parameterIndex, (String) x);
     } else if (x instanceof Integer) {
-      setInt(parameterIndex, ((Integer) x).intValue());
+      setInt(parameterIndex, (Integer) x);
     } else if (x instanceof Long) {
-      setLong(parameterIndex, ((Long) x).longValue());
+      setLong(parameterIndex, (Long) x);
     } else if (x instanceof Float) {
-      setFloat(parameterIndex, ((Float) x).floatValue());
+      setFloat(parameterIndex, (Float) x);
     } else if (x instanceof Double) {
-      setDouble(parameterIndex, ((Double) x).doubleValue());
+      setDouble(parameterIndex, (Double) x);
     } else if (x instanceof Boolean) {
-      setBoolean(parameterIndex, ((Boolean) x).booleanValue());
+      setBoolean(parameterIndex, (Boolean) x);
     } else if (x instanceof Timestamp) {
       setTimestamp(parameterIndex, (Timestamp) x);
     } else {
@@ -321,7 +407,7 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
   }
 
   @Override
-  public void setString(int parameterIndex, String x) throws SQLException {
+  public void setString(int parameterIndex, String x) {
     this.parameters.put(parameterIndex, "'" + x.replace("'", "\\'") + "'");
   }
 
@@ -336,7 +422,7 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
   }
 
   @Override
-  public void setTimestamp(int parameterIndex, Timestamp x) throws SQLException {
+  public void setTimestamp(int parameterIndex, Timestamp x) {
     ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(Instant.ofEpochMilli(x.getTime()),
         super.zoneId);
     this.parameters.put(parameterIndex, zonedDateTime
@@ -364,6 +450,10 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
 
     StringBuilder newSql = new StringBuilder(parts.get(0));
     for (int i = 1; i < parts.size(); i++) {
+      if (logger.isDebugEnabled()) {
+        logger.debug("SQL {}",sql);
+        logger.debug("parameters {}",parameters.size());
+      }
       if (!parameters.containsKey(i)) {
         throw new SQLException("Parameter #" + i + " is unset");
       }
@@ -406,7 +496,7 @@ public class IoTDBPreparedStatement extends IoTDBStatement implements PreparedSt
           break;
       }
     }
-    parts.add(sql.substring(off, sql.length()));
+    parts.add(sql.substring(off));
     return parts;
 
   }

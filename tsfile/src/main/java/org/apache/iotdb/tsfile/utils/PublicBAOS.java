@@ -18,22 +18,24 @@
  */
 package org.apache.iotdb.tsfile.utils;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
 
 /**
- * A subclass extending <code>ByteArrayOutputStream</code>. It's used to return the byte array directly. Note that the
- * size of byte array is large than actual size of valid contents, thus it's used cooperating with <code>size()</code>
- * or <code>capacity = size</code>
+ * A subclass extending <code>ByteArrayOutputStream</code>. It's used to return
+ * the byte array directly. Note that the size of byte array is large than
+ * actual size of valid contents, thus it's used cooperating with
+ * <code>size()</code> or <code>capacity = size</code>
  */
 public class PublicBAOS extends ByteArrayOutputStream {
 
-  public PublicBAOS(int size) {
-    super(size);
-  }
-
   public PublicBAOS() {
     super();
+  }
+
+  public PublicBAOS(int size) {
+    super(size);
   }
 
   /**
@@ -47,12 +49,41 @@ public class PublicBAOS extends ByteArrayOutputStream {
   }
 
   /**
-   * Construct one {@link ByteArrayInputStream} from the buff data
+   * It's not a thread-safe method.
+   * Override the super class's implementation.
+   * Remove the synchronized key word, to save the synchronization overhead.
    *
-   * @return one {@link ByteArrayInputStream} have all buff data
+   * Writes the complete contents of this byte array output stream to
+   * the specified output stream argument, as if by calling the output
+   * stream's write method using <code>out.write(buf, 0, count)</code>.
+   *
+   * @param      out   the output stream to which to write the data.
+   * @exception  IOException  if an I/O error occurs.
    */
-  public ByteArrayInputStream transformToInputStream() {
-    return new ByteArrayInputStream(this.buf, 0, size());
+  @Override
+  @SuppressWarnings("squid:S3551")
+  public void writeTo(OutputStream out) throws IOException {
+    out.write(buf, 0, count);
   }
 
+  /**
+   * It's not a thread-safe method.
+   * Override the super class's implementation.
+   * Remove the synchronized key word, to save the synchronization overhead.
+   *
+   * Resets the <code>count</code> field of this byte array output
+   * stream to zero, so that all currently accumulated output in the
+   * output stream is discarded. The output stream can be used again,
+   * reusing the already allocated buffer space.
+   */
+  @Override
+  @SuppressWarnings("squid:S3551")
+  public void reset() {
+    count = 0;
+  }
+
+  @Override
+  public int size() {
+    return count;
+  }
 }

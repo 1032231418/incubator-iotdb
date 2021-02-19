@@ -20,36 +20,69 @@ package org.apache.iotdb.tsfile.read.query.dataset;
 
 import java.io.IOException;
 import java.util.List;
-import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
-import org.apache.iotdb.tsfile.read.common.Field;
 import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.read.common.RowRecord;
-import org.apache.iotdb.tsfile.utils.Binary;
 
 public abstract class QueryDataSet {
 
   protected List<Path> paths;
   protected List<TSDataType> dataTypes;
 
+  protected int rowLimit = 0; // rowLimit > 0 means the LIMIT constraint exists
+  protected int rowOffset = 0;
+  protected int alreadyReturnedRowNum = 0;
+  protected boolean ascending;
+
+  public QueryDataSet() {
+  }
+
   public QueryDataSet(List<Path> paths, List<TSDataType> dataTypes) {
+    initQueryDataSetFields(paths, dataTypes, true);
+  }
+
+  public QueryDataSet(List<Path> paths, List<TSDataType> dataTypes, boolean ascending) {
+    initQueryDataSetFields(paths, dataTypes, ascending);
+  }
+
+  protected void initQueryDataSetFields(List<Path> paths, List<TSDataType> dataTypes, boolean ascending) {
     this.paths = paths;
     this.dataTypes = dataTypes;
+    this.ascending = ascending;
   }
 
-  public QueryDataSet(List<Path> paths) {
-    this.paths = paths;
+  public boolean hasNext() throws IOException {
+    // proceed to the OFFSET row by skipping rows
+    while (rowOffset > 0) {
+      if (hasNextWithoutConstraint()) {
+        nextWithoutConstraint(); // DO NOT use next()
+        rowOffset--;
+      } else {
+        return false;
+      }
+    }
+
+    // make sure within the LIMIT constraint if exists
+    if (rowLimit > 0 && alreadyReturnedRowNum >= rowLimit) {
+      return false;
+    }
+
+    return hasNextWithoutConstraint();
   }
 
-  /**
-   * This method is used for batch query.
-   */
-  public abstract boolean hasNext() throws IOException;
+  public abstract boolean hasNextWithoutConstraint() throws IOException;
 
   /**
    * This method is used for batch query, return RowRecord.
    */
-  public abstract RowRecord next() throws IOException;
+  public RowRecord next() throws IOException {
+    if (rowLimit > 0) {
+      alreadyReturnedRowNum++;
+    }
+    return nextWithoutConstraint();
+  }
+
+  public abstract RowRecord nextWithoutConstraint() throws IOException;
 
   public List<Path> getPaths() {
     return paths;
@@ -63,34 +96,23 @@ public abstract class QueryDataSet {
     this.dataTypes = dataTypes;
   }
 
-  protected Field getField(Object value, TSDataType dataType) {
-    if (value == null) {
-      return new Field(null);
-    }
+  public int getRowLimit() {
+    return rowLimit;
+  }
 
-    Field field = new Field(dataType);
-    switch (dataType) {
-      case DOUBLE:
-        field.setDoubleV((double) value);
-        break;
-      case FLOAT:
-        field.setFloatV((float) value);
-        break;
-      case INT64:
-        field.setLongV((long) value);
-        break;
-      case INT32:
-        field.setIntV((int) value);
-        break;
-      case BOOLEAN:
-        field.setBoolV((boolean) value);
-        break;
-      case TEXT:
-        field.setBinaryV((Binary) value);
-        break;
-      default:
-        throw new UnSupportedDataTypeException("UnSupported: " + dataType);
-    }
-    return field;
+  public void setRowLimit(int rowLimit) {
+    this.rowLimit = rowLimit;
+  }
+
+  public int getRowOffset() {
+    return rowOffset;
+  }
+
+  public void setRowOffset(int rowOffset) {
+    this.rowOffset = rowOffset;
+  }
+
+  public boolean hasLimit() {
+    return rowLimit > 0;
   }
 }

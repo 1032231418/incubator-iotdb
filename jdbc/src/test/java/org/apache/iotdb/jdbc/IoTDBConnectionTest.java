@@ -22,13 +22,20 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.when;
 
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
-
-import org.apache.iotdb.rpc.TSStatusCode;
-import org.apache.iotdb.service.rpc.thrift.*;
+import org.apache.iotdb.rpc.RpcUtils;
+import org.apache.iotdb.service.rpc.thrift.ServerProperties;
+import org.apache.iotdb.service.rpc.thrift.TSGetTimeZoneResp;
+import org.apache.iotdb.service.rpc.thrift.TSIService;
+import org.apache.iotdb.service.rpc.thrift.TSSetTimeZoneReq;
+import org.apache.iotdb.service.rpc.thrift.TSStatus;
 import org.apache.thrift.TException;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -40,8 +47,8 @@ public class IoTDBConnectionTest {
   private TSIService.Iface client;
 
   private IoTDBConnection connection = new IoTDBConnection();
-  private TSStatusType successStatus = new TSStatusType(TSStatusCode.SUCCESS_STATUS.getStatusCode(), "");
-  private TSStatus Status_SUCCESS = new TSStatus(successStatus);
+  private TSStatus successStatus = RpcUtils.SUCCESS_STATUS;
+  private long sessionId;
 
   @Before
   public void setUp() throws Exception {
@@ -53,25 +60,26 @@ public class IoTDBConnectionTest {
   }
 
   @Test
-  public void testSetTimeZone() throws TException, IoTDBSQLException {
+  public void testSetTimeZone() throws IoTDBSQLException, TException {
     String timeZone = "Asia/Shanghai";
     when(client.setTimeZone(any(TSSetTimeZoneReq.class)))
-        .thenReturn(new TSStatus(Status_SUCCESS));
-    connection.client = client;
+        .thenReturn(new TSStatus(successStatus));
+    connection.setClient(client);
     connection.setTimeZone(timeZone);
     assertEquals(connection.getTimeZone(), timeZone);
   }
 
   @Test
   public void testGetTimeZone() throws IoTDBSQLException, TException {
-    String timeZone = "GMT+:08:00";
-    when(client.getTimeZone()).thenReturn(new TSGetTimeZoneResp(Status_SUCCESS, timeZone));
-    connection.client = client;
+    String timeZone = ZoneId.systemDefault().toString();
+    sessionId = connection.getSessionId();
+    when(client.getTimeZone(sessionId)).thenReturn(new TSGetTimeZoneResp(successStatus, timeZone));
+    connection.setClient(client);
     assertEquals(connection.getTimeZone(), timeZone);
   }
 
   @Test
-  public void testGetServerProperties() throws IoTDBSQLException, TException {
+  public void testGetServerProperties() throws TException {
     final String version = "v0.1";
     @SuppressWarnings("serial") final List<String> supportedAggregationTime = new ArrayList<String>() {
       {
@@ -82,12 +90,18 @@ public class IoTDBConnectionTest {
     final String timestampPrecision = "ms";
     when(client.getProperties())
         .thenReturn(new ServerProperties(version, supportedAggregationTime, timestampPrecision));
-    connection.client = client;
+    connection.setClient(client);
     assertEquals(connection.getServerProperties().getVersion(), version);
     for (int i = 0; i < supportedAggregationTime.size(); i++) {
       assertEquals(connection.getServerProperties().getSupportedTimeAggregationOperations().get(i),
           supportedAggregationTime.get(i));
     }
     assertEquals(connection.getServerProperties().getTimestampPrecision(), timestampPrecision);
+  }
+
+  @Test
+  public void setTimeoutTest() throws SQLException {
+    connection.setQueryTimeout(60);
+    Assert.assertEquals(60, connection.getQueryTimeout());
   }
 }

@@ -19,6 +19,16 @@
 
 package org.apache.iotdb.tsfile.utils;
 
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.BINARY;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.BOOLEAN;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.DOUBLE;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.FLOAT;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.INTEGER;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.LONG;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.NULL;
+import static org.apache.iotdb.tsfile.utils.ReadWriteIOUtils.ClassSerializeId.STRING;
+
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -26,12 +36,15 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import org.apache.iotdb.tsfile.common.conf.TSFileConfig;
 import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
-import org.apache.iotdb.tsfile.file.metadata.enums.TSFreqType;
 import org.apache.iotdb.tsfile.read.reader.TsFileInput;
 
 /**
@@ -39,13 +52,16 @@ import org.apache.iotdb.tsfile.read.reader.TsFileInput;
  */
 public class ReadWriteIOUtils {
 
-  private static final int SHORT_LEN = 2;
-  private static final int INT_LEN = 4;
-  private static final int LONG_LEN = 8;
-  private static final int DOUBLE_LEN = 8;
-  private static final int FLOAT_LEN = 4;
+  public static final int BOOLEAN_LEN = 1;
+  public static final int SHORT_LEN = 2;
+  public static final int INT_LEN = 4;
+  public static final int LONG_LEN = 8;
+  public static final int DOUBLE_LEN = 8;
+  public static final int FLOAT_LEN = 4;
 
   private static final byte[] magicStringBytes;
+
+  private static final String RETURN_ERROR = "Intend to read %d bytes but %d are actually returned";
 
   static {
     magicStringBytes = BytesUtils.stringToBytes(TSFileConfig.MAGIC_STRING);
@@ -71,30 +87,23 @@ public class ReadWriteIOUtils {
   }
 
   /**
+   * read a byte from byteBuffer.
+   */
+  public static byte readByte(ByteBuffer buffer) {
+    return buffer.get();
+  }
+
+  /**
    * read bytes array in given size
    *
    * @param buffer buffer
-   * @param size size
+   * @param size   size
    * @return bytes array
    */
   public static byte[] readBytes(ByteBuffer buffer, int size) {
     byte[] res = new byte[size];
     buffer.get(res);
     return res;
-  }
-
-  /**
-   * write if the object not equals null. Eg, object eauals null, then write false.
-   */
-  public static int writeIsNotNull(Object object, OutputStream outputStream) throws IOException {
-    return write(object != null, outputStream);
-  }
-
-  /**
-   * write if the object not equals null. Eg, object eauals null, then write false.
-   */
-  public static int writeIsNotNull(Object object, ByteBuffer buffer) {
-    return write(object != null, buffer);
   }
 
   /**
@@ -111,11 +120,54 @@ public class ReadWriteIOUtils {
     return readBool(buffer);
   }
 
+  public static int write(Map<String, String> map, DataOutputStream stream) throws IOException {
+    int length = 0;
+    stream.writeInt(map.size());
+    length += 4;
+    for (Entry<String, String> entry : map.entrySet()) {
+      length += write(entry.getKey(), stream);
+      length += write(entry.getValue(), stream);
+    }
+    return length;
+  }
+
+  public static void write(List<Map<String, String>> maps, DataOutputStream stream) throws IOException {
+    for (Map<String, String> map : maps) {
+      write(map, stream);
+    }
+  }
+
+  public static int write(Map<String, String> map, ByteBuffer buffer) {
+    int length = 0;
+    byte[] bytes;
+    buffer.putInt(map.size());
+    length += 4;
+    for (Entry<String, String> entry : map.entrySet()) {
+      bytes = entry.getKey().getBytes();
+      buffer.putInt(bytes.length);
+      length += 4;
+      buffer.put(bytes);
+      length += bytes.length;
+      bytes = entry.getValue().getBytes();
+      buffer.putInt(bytes.length);
+      length += 4;
+      buffer.put(bytes);
+      length += bytes.length;
+    }
+    return length;
+  }
+
+  public static void write(List<Map<String, String>> maps, ByteBuffer buffer) {
+    for (Map<String, String> map : maps) {
+      write(map, buffer);
+    }
+  }
+
   /**
    * write a int value to outputStream according to flag. If flag is true, write 1, else write 0.
    */
   public static int write(Boolean flag, OutputStream outputStream) throws IOException {
-    if (flag) {
+    if (Boolean.TRUE.equals(flag)) {
       outputStream.write(1);
     } else {
       outputStream.write(0);
@@ -128,7 +180,7 @@ public class ReadWriteIOUtils {
    */
   public static int write(Boolean flag, ByteBuffer buffer) {
     byte a;
-    if (flag) {
+    if (Boolean.TRUE.equals(flag)) {
       a = 1;
     } else {
       a = 0;
@@ -182,6 +234,17 @@ public class ReadWriteIOUtils {
   }
 
   /**
+   * write a short n to byteBuffer.
+   *
+   * @return The number of bytes used to represent n.
+   */
+  public static int write(Binary n, ByteBuffer buffer) {
+    buffer.putInt(n.getLength());
+    buffer.put(n.getValues());
+    return INT_LEN + n.getLength();
+  }
+
+  /**
    * write a int n to outputStream.
    *
    * @return The number of bytes used to represent n.
@@ -189,7 +252,17 @@ public class ReadWriteIOUtils {
   public static int write(int n, OutputStream outputStream) throws IOException {
     byte[] bytes = BytesUtils.intToBytes(n);
     outputStream.write(bytes);
-    return bytes.length;
+    return INT_LEN;
+  }
+
+  /**
+   * write the size (int) of the binary and then the bytes in binary
+   */
+  public static int write(Binary binary, OutputStream outputStream) throws IOException {
+    byte[] size = BytesUtils.intToBytes(binary.getValues().length);
+    outputStream.write(size);
+    outputStream.write(binary.getValues());
+    return size.length + binary.getValues().length;
   }
 
   /**
@@ -232,7 +305,7 @@ public class ReadWriteIOUtils {
   public static int write(long n, OutputStream outputStream) throws IOException {
     byte[] bytes = BytesUtils.longToBytes(n);
     outputStream.write(bytes);
-    return bytes.length;
+    return LONG_LEN;
   }
 
   /**
@@ -244,14 +317,55 @@ public class ReadWriteIOUtils {
   }
 
   /**
+   * write a float n to byteBuffer.
+   */
+  public static int write(float n, ByteBuffer buffer) {
+    buffer.putFloat(n);
+    return FLOAT_LEN;
+  }
+
+  /**
+   * write a double n to byteBuffer.
+   */
+  public static int write(double n, ByteBuffer buffer) {
+    buffer.putDouble(n);
+    return DOUBLE_LEN;
+  }
+
+
+  /**
    * write string to outputStream.
    *
    * @return the length of string represented by byte[].
    */
   public static int write(String s, OutputStream outputStream) throws IOException {
     int len = 0;
+    if (s == null) {
+      len += write(-1, outputStream);
+      return len;
+    }
+
     byte[] bytes = s.getBytes();
     len += write(bytes.length, outputStream);
+    outputStream.write(bytes);
+    len += bytes.length;
+    return len;
+  }
+
+  /**
+   * write string to outputStream.
+   *
+   * @return the length of string represented by byte[].
+   */
+  public static int writeVar(String s, OutputStream outputStream) throws IOException {
+    int len = 0;
+    if (s == null) {
+      len += ReadWriteForEncodingUtils.writeVarInt(-1, outputStream);
+      return len;
+    }
+
+    byte[] bytes = s.getBytes(TSFileConfig.STRING_CHARSET);
+    len += ReadWriteForEncodingUtils.writeVarInt(bytes.length, outputStream);
     outputStream.write(bytes);
     len += bytes.length;
     return len;
@@ -263,9 +377,24 @@ public class ReadWriteIOUtils {
    * @return the length of string represented by byte[].
    */
   public static int write(String s, ByteBuffer buffer) {
+    if (s == null) {
+      return write(-1, buffer);
+    }
     int len = 0;
     byte[] bytes = s.getBytes();
     len += write(bytes.length, buffer);
+    buffer.put(bytes);
+    len += bytes.length;
+    return len;
+  }
+
+  public static int writeVar(String s, ByteBuffer buffer) {
+    if (s == null) {
+      return ReadWriteForEncodingUtils.writeVarInt(-1, buffer);
+    }
+    int len = 0;
+    byte[] bytes = s.getBytes();
+    len += ReadWriteForEncodingUtils.writeVarInt(bytes.length, buffer);
     buffer.put(bytes);
     len += bytes.length;
     return len;
@@ -281,6 +410,12 @@ public class ReadWriteIOUtils {
     outputStream.write(bytes);
     len += bytes.length;
     return len;
+  }
+
+  public static void writeWithoutSize(ByteBuffer byteBuffer, int offset, int len,
+      OutputStream outputStream) throws IOException {
+    byte[] bytes = byteBuffer.array();
+    outputStream.write(bytes, offset, len);
   }
 
   /**
@@ -300,7 +435,7 @@ public class ReadWriteIOUtils {
    */
   public static int write(CompressionType compressionType, OutputStream outputStream)
       throws IOException {
-    short n = compressionType.serialize();
+    byte n = compressionType.serialize();
     return write(n, outputStream);
   }
 
@@ -308,7 +443,7 @@ public class ReadWriteIOUtils {
    * write compressionType to byteBuffer.
    */
   public static int write(CompressionType compressionType, ByteBuffer buffer) {
-    short n = compressionType.serialize();
+    byte n = compressionType.serialize();
     return write(n, buffer);
   }
 
@@ -316,12 +451,12 @@ public class ReadWriteIOUtils {
    * TSDataType.
    */
   public static int write(TSDataType dataType, OutputStream outputStream) throws IOException {
-    short n = dataType.serialize();
+    byte n = dataType.serialize();
     return write(n, outputStream);
   }
 
   public static int write(TSDataType dataType, ByteBuffer buffer) {
-    short n = dataType.serialize();
+    byte n = dataType.serialize();
     return write(n, buffer);
   }
 
@@ -329,26 +464,20 @@ public class ReadWriteIOUtils {
    * TSEncoding.
    */
   public static int write(TSEncoding encoding, OutputStream outputStream) throws IOException {
-    short n = encoding.serialize();
+    byte n = encoding.serialize();
     return write(n, outputStream);
   }
 
   public static int write(TSEncoding encoding, ByteBuffer buffer) {
-    short n = encoding.serialize();
+    byte n = encoding.serialize();
     return write(n, buffer);
   }
 
   /**
-   * TSFreqType.
+   * read a byte var from inputStream.
    */
-  public static int write(TSFreqType freqType, OutputStream outputStream) throws IOException {
-    short n = freqType.serialize();
-    return write(n, outputStream);
-  }
-
-  public static int write(TSFreqType freqType, ByteBuffer buffer) {
-    short n = freqType.serialize();
-    return write(n, buffer);
+  public static byte readByte(InputStream inputStream) throws IOException {
+    return (byte) inputStream.read();
   }
 
   /**
@@ -358,7 +487,7 @@ public class ReadWriteIOUtils {
     byte[] bytes = new byte[SHORT_LEN];
     int readLen = inputStream.read(bytes);
     if (readLen != SHORT_LEN) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
           SHORT_LEN, readLen));
     }
     return BytesUtils.bytesToShort(bytes);
@@ -378,7 +507,7 @@ public class ReadWriteIOUtils {
     byte[] bytes = new byte[FLOAT_LEN];
     int readLen = inputStream.read(bytes);
     if (readLen != FLOAT_LEN) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
           FLOAT_LEN, readLen));
     }
     return BytesUtils.bytesToFloat(bytes);
@@ -400,7 +529,7 @@ public class ReadWriteIOUtils {
     byte[] bytes = new byte[DOUBLE_LEN];
     int readLen = inputStream.read(bytes);
     if (readLen != DOUBLE_LEN) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
           DOUBLE_LEN, readLen));
     }
     return BytesUtils.bytesToDouble(bytes);
@@ -422,7 +551,7 @@ public class ReadWriteIOUtils {
     byte[] bytes = new byte[INT_LEN];
     int readLen = inputStream.read(bytes);
     if (readLen != INT_LEN) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
           INT_LEN, readLen));
     }
     return BytesUtils.bytesToInt(bytes);
@@ -454,7 +583,7 @@ public class ReadWriteIOUtils {
     byte[] bytes = new byte[LONG_LEN];
     int readLen = inputStream.read(bytes);
     if (readLen != LONG_LEN) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
           LONG_LEN, readLen));
     }
     return BytesUtils.bytesToLong(bytes);
@@ -472,10 +601,30 @@ public class ReadWriteIOUtils {
    */
   public static String readString(InputStream inputStream) throws IOException {
     int strLength = readInt(inputStream);
+    if (strLength <= 0) {
+      return null;
+    }
     byte[] bytes = new byte[strLength];
     int readLen = inputStream.read(bytes, 0, strLength);
     if (readLen != strLength) {
-      throw new IOException(String.format("Intend to read %d bytes but %d are actually returned",
+      throw new IOException(String.format(RETURN_ERROR,
+          strLength, readLen));
+    }
+    return new String(bytes, 0, strLength);
+  }
+
+  /**
+   * string length's type is varInt
+   */
+  public static String readVarIntString(InputStream inputStream) throws IOException {
+    int strLength = ReadWriteForEncodingUtils.readVarInt(inputStream);
+    if (strLength <= 0) {
+      return null;
+    }
+    byte[] bytes = new byte[strLength];
+    int readLen = inputStream.read(bytes, 0, strLength);
+    if (readLen != strLength) {
+      throw new IOException(String.format(RETURN_ERROR,
           strLength, readLen));
     }
     return new String(bytes, 0, strLength);
@@ -486,6 +635,26 @@ public class ReadWriteIOUtils {
    */
   public static String readString(ByteBuffer buffer) {
     int strLength = readInt(buffer);
+    if (strLength < 0) {
+      return null;
+    } else if (strLength == 0) {
+      return "";
+    }
+    byte[] bytes = new byte[strLength];
+    buffer.get(bytes, 0, strLength);
+    return new String(bytes, 0, strLength);
+  }
+
+  /**
+   * string length's type is varInt
+   */
+  public static String readVarIntString(ByteBuffer buffer) {
+    int strLength = ReadWriteForEncodingUtils.readVarInt(buffer);
+    if (strLength < 0) {
+      return null;
+    } else if (strLength == 0) {
+      return "";
+    }
     byte[] bytes = new byte[strLength];
     buffer.get(bytes, 0, strLength);
     return new String(bytes, 0, strLength);
@@ -537,13 +706,36 @@ public class ReadWriteIOUtils {
   public static byte[] readBytes(InputStream inputStream, int length) throws IOException {
     byte[] bytes = new byte[length];
     int offset = 0;
-    int len = 0;
+    int len;
     while (bytes.length - offset > 0
         && (len = inputStream.read(bytes, offset, bytes.length - offset)) != -1) {
       offset += len;
     }
     return bytes;
   }
+
+
+  public static Map<String, String> readMap(ByteBuffer buffer) {
+    int length = readInt(buffer);
+    Map<String, String> map = new HashMap<>(length);
+    for (int i = 0; i < length; i++) {
+      // key
+      String key = readString(buffer);
+      // value
+      String value = readString(buffer);
+      map.put(key, value);
+    }
+    return map;
+  }
+
+  public static List<Map<String, String>> readMaps(ByteBuffer buffer, int totalSize) {
+    List<Map<String, String>> results = new ArrayList<>(totalSize);
+    for (int i = 0; i < totalSize; i++) {
+      results.add(ReadWriteIOUtils.readMap(buffer));
+    }
+    return results;
+  }
+
 
   /**
    * unlike InputStream.read(bytes), this method makes sure that you can read length bytes or reach
@@ -555,31 +747,29 @@ public class ReadWriteIOUtils {
     return readBytes(inputStream, length);
   }
 
-  /**
-   * read bytes from inputStream, this method makes sure that you can read length bytes or reach to
-   * the end of the stream.
-   */
-  public static ByteBuffer readByteBufferWithSelfDescriptionLength(InputStream inputStream)
-      throws IOException {
-    byte[] bytes = readBytesWithSelfDescriptionLength(inputStream);
-    ByteBuffer byteBuffer = ByteBuffer.allocate(bytes.length);
-    byteBuffer.put(bytes);
-    byteBuffer.flip();
-    return byteBuffer;
+  public static Binary readBinary(ByteBuffer buffer) {
+    int length = readInt(buffer);
+    byte[] bytes = readBytes(buffer, length);
+    return new Binary(bytes);
+  }
+
+  public static Binary readBinary(InputStream inputStream) throws IOException {
+    int length = readInt(inputStream);
+    byte[] bytes = readBytes(inputStream, length);
+    return new Binary(bytes);
   }
 
   /**
    * read bytes from byteBuffer, this method makes sure that you can read length bytes or reach to
    * the end of the buffer.
+   * <p>
+   * read a int + buffer
    */
-  public static ByteBuffer readByteBufferWithSelfDescriptionLength(ByteBuffer buffer) {
-    int byteLength = readInt(buffer);
+  public static byte[] readByteBufferWithSelfDescriptionLength(ByteBuffer buffer) {
+    int byteLength = ReadWriteForEncodingUtils.readUnsignedVarInt(buffer);
     byte[] bytes = new byte[byteLength];
     buffer.get(bytes);
-    ByteBuffer byteBuffer = ByteBuffer.allocate(byteLength);
-    byteBuffer.put(bytes);
-    byteBuffer.flip();
-    return byteBuffer;
+    return bytes;
   }
 
   /**
@@ -629,39 +819,6 @@ public class ReadWriteIOUtils {
   }
 
   /**
-   * List&lt;Integer&gt;.
-   */
-  public static List<Integer> readIntegerList(InputStream inputStream) throws IOException {
-    int size = readInt(inputStream);
-    if (size <= 0) {
-      return null;
-    }
-
-    List<Integer> list = new ArrayList<>();
-    for (int i = 0; i < size; i++) {
-      list.add(readInt(inputStream));
-    }
-
-    return list;
-  }
-
-  /**
-   * read integer list with self define length.
-   */
-  public static List<Integer> readIntegerList(ByteBuffer buffer) {
-    int size = readInt(buffer);
-    if (size <= 0) {
-      return null;
-    }
-
-    List<Integer> list = new ArrayList<>();
-    for (int i = 0; i < size; i++) {
-      list.add(readInt(buffer));
-    }
-    return list;
-  }
-
-  /**
    * read string list with self define length.
    */
   public static List<String> readStringList(InputStream inputStream) throws IOException {
@@ -681,7 +838,7 @@ public class ReadWriteIOUtils {
   public static List<String> readStringList(ByteBuffer buffer) {
     int size = readInt(buffer);
     if (size <= 0) {
-      return null;
+      return Collections.emptyList();
     }
 
     List<String> list = new ArrayList<>();
@@ -693,48 +850,39 @@ public class ReadWriteIOUtils {
   }
 
   public static CompressionType readCompressionType(InputStream inputStream) throws IOException {
-    short n = readShort(inputStream);
+    byte n = readByte(inputStream);
     return CompressionType.deserialize(n);
   }
 
   public static CompressionType readCompressionType(ByteBuffer buffer) {
-    short n = readShort(buffer);
+    byte n = buffer.get();
     return CompressionType.deserialize(n);
   }
 
   public static TSDataType readDataType(InputStream inputStream) throws IOException {
-    short n = readShort(inputStream);
+    byte n = readByte(inputStream);
     return TSDataType.deserialize(n);
   }
 
   public static TSDataType readDataType(ByteBuffer buffer) {
-    short n = readShort(buffer);
+    byte n = buffer.get();
     return TSDataType.deserialize(n);
   }
 
   public static TSEncoding readEncoding(InputStream inputStream) throws IOException {
-    short n = readShort(inputStream);
+    byte n = readByte(inputStream);
     return TSEncoding.deserialize(n);
   }
 
   public static TSEncoding readEncoding(ByteBuffer buffer) {
-    short n = readShort(buffer);
+    byte n = buffer.get();
     return TSEncoding.deserialize(n);
   }
 
-  public static TSFreqType readFreqType(InputStream inputStream) throws IOException {
-    short n = readShort(inputStream);
-    return TSFreqType.deserialize(n);
-  }
-
-  public static TSFreqType readFreqType(ByteBuffer buffer) {
-    short n = readShort(buffer);
-    return TSFreqType.deserialize(n);
-  }
 
   /**
-   * to check whether the byte buffer is reach the magic string
-   * this method doesn't change the position of the byte buffer
+   * to check whether the byte buffer is reach the magic string this method doesn't change the
+   * position of the byte buffer
    *
    * @param byteBuffer byte buffer
    * @return whether the byte buffer is reach the magic string
@@ -747,13 +895,91 @@ public class ReadWriteIOUtils {
   }
 
   /**
-   * to check whether the inputStream is reach the magic string
-   * this method doesn't change the position of the inputStream
+   * to check whether the inputStream is reach the magic string this method doesn't change the
+   * position of the inputStream
    *
    * @param inputStream inputStream
    * @return whether the inputStream is reach the magic string
    */
   public static boolean checkIfMagicString(InputStream inputStream) throws IOException {
     return inputStream.available() <= magicStringBytes.length;
+  }
+
+  enum ClassSerializeId {
+    LONG, DOUBLE, INTEGER, FLOAT, BINARY, BOOLEAN, STRING, NULL
+  }
+
+  public static void writeObject(Object value, DataOutputStream outputStream) {
+    try {
+      if (value instanceof Long) {
+        outputStream.write(LONG.ordinal());
+        outputStream.writeLong((Long) value);
+      } else if (value instanceof Double) {
+        outputStream.write(DOUBLE.ordinal());
+        outputStream.writeDouble((Double) value);
+      } else if (value instanceof Integer) {
+        outputStream.write(INTEGER.ordinal());
+        outputStream.writeInt((Integer) value);
+      } else if (value instanceof Float) {
+        outputStream.write(FLOAT.ordinal());
+        outputStream.writeFloat((Float) value);
+      } else if (value instanceof Binary) {
+        outputStream.write(BINARY.ordinal());
+        byte[] bytes = ((Binary) value).getValues();
+        outputStream.writeInt(bytes.length);
+        outputStream.write(bytes);
+      } else if (value instanceof Boolean) {
+        outputStream.write(BOOLEAN.ordinal());
+        outputStream.write(Boolean.TRUE.equals(value) ? 1 : 0);
+      } else if (value == null) {
+        outputStream.write(NULL.ordinal());
+      } else {
+        outputStream.write(STRING.ordinal());
+        byte[] bytes = value.toString().getBytes();
+        outputStream.writeInt(bytes.length);
+        outputStream.write(bytes);
+      }
+    } catch (IOException ignored) {
+      // ignored
+    }
+  }
+
+  public static Object readObject(ByteBuffer buffer) {
+    ClassSerializeId serializeId = ClassSerializeId.values()[buffer.get()];
+    switch (serializeId) {
+      case BOOLEAN:
+        return buffer.get() == 1;
+      case FLOAT:
+        return buffer.getFloat();
+      case DOUBLE:
+        return buffer.getDouble();
+      case LONG:
+        return buffer.getLong();
+      case INTEGER:
+        return buffer.getInt();
+      case BINARY:
+        int length = buffer.getInt();
+        byte[] bytes = new byte[length];
+        buffer.get(bytes);
+        return new Binary(bytes);
+      case NULL:
+        return null;
+      case STRING:
+      default:
+        length = buffer.getInt();
+        bytes = new byte[length];
+        buffer.get(bytes);
+        return new String(bytes);
+    }
+  }
+
+  public static ByteBuffer clone(ByteBuffer original) {
+    ByteBuffer clone = ByteBuffer.allocate(original.remaining());
+    while (original.hasRemaining()) {
+      clone.put(original.get());
+    }
+
+    clone.flip();
+    return clone;
   }
 }

@@ -33,8 +33,8 @@ pipeline {
     }
 
     tools {
-        maven 'Maven 3 (latest)'
-        jdk 'JDK 1.8 (latest)'
+        maven 'maven_3_latest'
+        jdk 'jdk_11_latest'
     }
 
     options {
@@ -82,9 +82,10 @@ pipeline {
             }
             steps {
                 echo 'Building'
+                sh 'mvn clean'
                 // We'll deploy to a relative directory so we can
-                // deploy new versions only if the entrie build succeeds
-                sh 'mvn ${MVN_TEST_FAIL_IGNORE} -DaltDeploymentRepository=snapshot-repo::default::file:./local-snapshots-dir clean deploy'
+                // deploy new versions only if the entire build succeeds
+                sh 'mvn ${MVN_TEST_FAIL_IGNORE} -DaltDeploymentRepository=snapshot-repo::default::file:./local-snapshots-dir -P client-cpp clean deploy -P get-jar-with-dependencies'
             }
             post {
                 always {
@@ -99,12 +100,18 @@ pipeline {
                 branch 'master'
             }
             steps {
-                echo 'Checking Code Quality'
-                withSonarQubeEnv('ASF Sonar Analysis') {
-                    sh 'mvn sonar:sonar'
+                echo 'Checking Code Quality on SonarCloud'
+                // Main parameters
+                script {
+                    // Then run the analysis
+                    // 'my-sonarcloud-token' needs to be defined for this job and contains the user token
+                    withCredentials([string(credentialsId: 'xiangdong-iotdb-sonarcloud-token', variable: 'SONAR_TOKEN')]) {
+                        sh "mvn verify sonar:sonar -Dsonar.branch.name=master -Dsonar.host.url=https://sonarcloud.io -Dsonar.organization=apache -Dsonar.projectKey=apache_incubator-iotdb -Dsonar.login=${SONAR_TOKEN} -DskipTests"
+                    }
                 }
             }
         }
+
 
         stage('Deploy') {
             when {
@@ -113,7 +120,28 @@ pipeline {
             steps {
                 echo 'Deploying'
                 // Deploy the artifacts using the wagon-maven-plugin.
-                sh 'mvn -f jenkins.pom -X -P deploy-snapshots wagon:upload'
+                sh 'mvn -f jenkins.pom -X -P deploy-snapshots -P client-cpp wagon:upload -P get-jar-with-dependencies'
+            }
+        }
+
+        stage('Deploy site') {
+            when {
+                branch 'master'
+            }
+            // Only the nodes labeled 'git-websites' have the credentials to commit to the.
+            agent {
+                node {
+                    label 'git-websites'
+                }
+            }
+            steps {
+                // Publish the site with the scm-publish plugin.
+                sh 'mvn -P site -P compile-site -P compile-site-0.11 -P compile-site-0.10 -P compile-site-0.9 -P compile-site-0.8 compile scm-publish:publish-scm -pl site'
+
+                // Clean up the snapshots directory (freeing up more space after deploying).
+                dir("target") {
+                    deleteDir()
+                }
             }
         }
 

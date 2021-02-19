@@ -18,62 +18,106 @@
  */
 package org.apache.iotdb.tsfile.file.metadata.enums;
 
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import org.apache.iotdb.tsfile.exception.write.UnSupportedDataTypeException;
+
 public enum TSDataType {
-  BOOLEAN, INT32, INT64, FLOAT, DOUBLE, TEXT;
+  /**
+   * BOOLEAN
+   */
+  BOOLEAN((byte) 0),
+
+  /**
+   *
+   */
+  INT32((byte) 1),
+
+  /**
+   * INT64
+   */
+  INT64((byte) 2),
+
+  /**
+   * FLOAT
+   */
+  FLOAT((byte) 3),
+
+  /**
+   * DOUBLE
+   */
+  DOUBLE((byte) 4),
+
+  /**
+   * TEXT
+   */
+  TEXT((byte) 5);
+
+  private final byte type;
+
+  TSDataType(byte type) {
+    this.type = type;
+  }
 
   /**
    * give an integer to return a data type.
    *
-   * @param i -param to judge enum type
+   * @param type -param to judge enum type
    * @return -enum type
    */
-  public static TSDataType deserialize(short i) {
-    if(i >= 6){
-      throw new IllegalArgumentException("Invalid input: " + i);
+  public static TSDataType deserialize(byte type) {
+    return getTsDataType(type);
+  }
+
+
+  private static TSDataType getTsDataType(byte type) {
+    for (TSDataType tsDataType : TSDataType.values()) {
+      if (type == tsDataType.type) {
+        return tsDataType;
+      }
     }
-    switch (i) {
-      case 0:
-        return BOOLEAN;
-      case 1:
-        return INT32;
-      case 2:
-        return INT64;
-      case 3:
-        return FLOAT;
-      case 4:
-        return DOUBLE;
-      case 5:
-        return TEXT;
-      default:
-        return TEXT;
-    }
+
+    throw new IllegalArgumentException("Invalid input: " + type);
+  }
+
+  public static TSDataType deserializeFrom(ByteBuffer buffer) {
+    return deserialize(buffer.get());
   }
 
   public static int getSerializedSize() {
-    return Short.BYTES;
+    return Byte.BYTES;
+  }
+
+  public void serializeTo(ByteBuffer byteBuffer) {
+    byteBuffer.put(serialize());
+  }
+
+  public void serializeTo(DataOutputStream outputStream) throws IOException {
+    outputStream.write(serialize());
+  }
+
+  public int getDataTypeSize() {
+    switch (this) {
+      case BOOLEAN:
+        return 1;
+      case INT32:
+      case FLOAT:
+        return 4;
+        // For text: return the size of reference here
+      case TEXT:
+      case INT64:
+      case DOUBLE:
+        return 8;
+      default:
+        throw new UnSupportedDataTypeException(this.toString());
+    }
   }
 
   /**
-   * return a serialize data type.
-   *
-   * @return -enum type
+   * @return byte number
    */
-  public short serialize() {
-    switch (this) {
-      case BOOLEAN:
-        return 0;
-      case INT32:
-        return 1;
-      case INT64:
-        return 2;
-      case FLOAT:
-        return 3;
-      case DOUBLE:
-        return 4;
-      case TEXT:
-        return 5;
-      default:
-        return -1;
-    }
+  public byte serialize() {
+    return type;
   }
 }

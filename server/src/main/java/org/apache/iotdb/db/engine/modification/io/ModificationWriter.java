@@ -20,7 +20,6 @@
 package org.apache.iotdb.db.engine.modification.io;
 
 import java.io.IOException;
-
 import org.apache.iotdb.db.engine.modification.Modification;
 
 /**
@@ -31,6 +30,7 @@ public interface ModificationWriter {
 
   /**
    * Write a new modification to the persistent medium.
+   * Notice that after calling write(), a fileWriter is opened,
    * @param mod the modification to be written.
    */
   void write(Modification mod) throws IOException;

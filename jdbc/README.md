@@ -47,7 +47,7 @@ mvn clean install -pl jdbc -am -Dmaven.test.skip=true
     <dependency>
       <groupId>org.apache.iotdb</groupId>
       <artifactId>iotdb-jdbc</artifactId>
-      <version>0.8.0-SNAPSHOT</version>
+      <version>0.10.0</version>
     </dependency>
 </dependencies>
 ```
@@ -59,7 +59,7 @@ This chapter provides an example of how to open a database connection, execute a
 
 Requires that you include the packages containing the JDBC classes needed for database programming.
 
-**NOTE: For faster insertion, the insertBatch() in Session is recommended.**
+**NOTE: For faster insertion, the insertTablet() in Session is recommended.**
 
 ```Java
 import java.sql.*;
@@ -236,7 +236,6 @@ Here is a list of Status Code and related message:
 |301|TIMESERIES_NOT_EXIST_ERROR|Timeseries does not exist|
 |302|UNSUPPORTED_FETCH_METADATA_OPERATION_ERROR|Unsupported fetch metadata operation|
 |303|FETCH_METADATA_ERROR|Failed to fetch metadata|
-|304|CHECK_FILE_LEVEL_ERROR|Meet error while checking file level|
 |400|EXECUTE_STATEMENT_ERROR|Execute statement error|
 |401|SQL_PARSE_ERROR|Meet error while parsing SQL|
 |402|GENERATE_TIME_ZONE_ERROR|Meet error while generating time zone|
@@ -248,3 +247,26 @@ Here is a list of Status Code and related message:
 |601|NOT_LOGIN_ERROR|Has not logged in|
 |602|NO_PERMISSION_ERROR|No permissions for this operation|
 |603|UNINITIALIZED_AUTH_ERROR|Uninitialized authorizer|
+
+##How to try IoTDB JDBC using Karaf
+Suppose you have started Karaf 4.2.8.
+
+Put the iotdb-jdbc jars into your maven repository:
+`mvn install -DskipTests -pl iotdb-jdbc -am`
+
+In your Karaf client shell:
+feature:repo-add mvn:org.apache.iotdb/iotdb-jdbc/0.10.0-SNPASHOT/xml/features
+
+NOTE: that you must install JDBC first and then iotdb-feature
+
+```ini
+feature:install jdbc 
+feature:install iotdb-feature
+```
+Start a data source instance (supposed you have started IoTDB):
+
+```
+jdbc:ds-create -dc org.apache.iotdb.jdbc.IoTDBDriver -u root -p root -url "jdbc:iotdb://127.0.0.1:6667/" IoTDB
+```
+Try query:
+`jdbc:query IoTDB "select * from root"`

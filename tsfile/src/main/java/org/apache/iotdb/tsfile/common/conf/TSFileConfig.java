@@ -18,31 +18,40 @@
  */
 package org.apache.iotdb.tsfile.common.conf;
 
+import java.io.Serializable;
 import java.nio.charset.Charset;
+
+import org.apache.iotdb.tsfile.file.metadata.enums.CompressionType;
 import org.apache.iotdb.tsfile.fileSystem.FSType;
 
 /**
- * TSFileConfig is a configure class. Every variables is public and has default value.
+ * TSFileConfig is a configure class. Every variables is public and has default
+ * value.
  */
-public class TSFileConfig {
+public class TSFileConfig implements Serializable {
 
-  // Memory configuration
+  /**
+   * encoding configuration
+   */
   public static final int RLE_MIN_REPEATED_NUM = 8;
   public static final int RLE_MAX_REPEATED_NUM = 0x7FFF;
   public static final int RLE_MAX_BIT_PACKED_NUM = 63;
 
-  // Data type configuration
-  // Gorilla encoding configuration
-  public static final int FLOAT_LENGTH = 32;
-  public static final int FLAOT_LEADING_ZERO_LENGTH = 5;
   public static final int FLOAT_VALUE_LENGTH = 6;
-
-  // Encoder configuration
-  public static final int DOUBLE_LENGTH = 64;
-  public static final int DOUBLE_LEADING_ZERO_LENGTH = 6;
-
-  // RLE configuration
   public static final int DOUBLE_VALUE_LENGTH = 7;
+
+  public static final int VALUE_BITS_LENGTH_32BIT = 32;
+  public static final int LEADING_ZERO_BITS_LENGTH_32BIT = 5;
+  public static final int MEANINGFUL_XOR_BITS_LENGTH_32BIT = 5;
+
+  public static final int VALUE_BITS_LENGTH_64BIT = 64;
+  public static final int LEADING_ZERO_BITS_LENGTH_64BIT = 6;
+  public static final int MEANINGFUL_XOR_BITS_LENGTH_64BIT = 6;
+
+  public static final int GORILLA_ENCODING_ENDING_INTEGER = Integer.MIN_VALUE;
+  public static final long GORILLA_ENCODING_ENDING_LONG = Long.MIN_VALUE;
+  public static final float GORILLA_ENCODING_ENDING_FLOAT = Float.NaN;
+  public static final double GORILLA_ENCODING_ENDING_DOUBLE = Double.NaN;
 
   /**
    * String encoder with UTF-8 encodes a character to at most 4 bytes.
@@ -52,9 +61,12 @@ public class TSFileConfig {
   public static final Charset STRING_CHARSET = Charset.forName(STRING_ENCODING);
   public static final String CONFIG_FILE_NAME = "iotdb-engine.properties";
   public static final String MAGIC_STRING = "TsFile";
-  public static final String VERSION_NUMBER = "000001";
-  public static final String OLD_MAGIC_STRING = "TsFilev0.8.0";
-  public static final String OLD_VERSION = "v0.8.0";
+  public static final String VERSION_NUMBER_V2 = "000002";
+  public static final String VERSION_NUMBER_V1 = "000001";
+  /**
+   * version number is changed to use 1 byte to represent since version 3
+   */
+  public static final byte VERSION_NUMBER = 0x03;
 
   /**
    * Bloom filter constrain
@@ -63,9 +75,9 @@ public class TSFileConfig {
   public static final double MAX_BLOOM_FILTER_ERROR_RATE = 0.1;
 
   /**
-   * The default grow size of class BatchData.
+   * The primitive array capacity threshold.
    */
-  public static final int DYNAMIC_DATA_SIZE = 1000;
+  public static final int ARRAY_CAPACITY_THRESHOLD = 1000;
   /**
    * Memory size threshold for flushing to disk, default value is 128MB.
    */
@@ -79,6 +91,10 @@ public class TSFileConfig {
    */
   private int maxNumberOfPointsInPage = 1024 * 1024;
   /**
+   * The maximum degree of a metadataIndex node, default value is 1024
+   */
+  private int maxDegreeOfIndexNode = 1024;
+  /**
    * Data type for input timestamp, TsFile supports INT32 or INT64.
    */
   private String timeSeriesDataType = "INT64";
@@ -91,15 +107,15 @@ public class TSFileConfig {
    */
   private int floatPrecision = 2;
   /**
-   * Encoder of time column, TsFile supports TS_2DIFF, PLAIN and RLE(run-length encoding) Default
-   * value is TS_2DIFF.
+   * Encoder of time column, TsFile supports TS_2DIFF, PLAIN and RLE(run-length
+   * encoding) Default value is TS_2DIFF.
    */
-  private String timeEncoder = "TS_2DIFF";
+  private String timeEncoding = "TS_2DIFF";
   /**
-   * Encoder of value series. default value is PLAIN. For int, long data type, TsFile also supports
-   * TS_2DIFF and RLE(run-length encoding). For float, double data type, TsFile also supports
-   * TS_2DIFF, RLE(run-length encoding) and GORILLA. For text data type, TsFile only supports
-   * PLAIN.
+   * Encoder of value series. default value is PLAIN. For int, long data type,
+   * TsFile also supports TS_2DIFF, REGULAR, GORILLA and RLE(run-length encoding).
+   * For float, double data type, TsFile also supports TS_2DIFF, RLE(run-length encoding) and
+   * GORILLA. For text data type, TsFile only supports PLAIN.
    */
   private String valueEncoder = "PLAIN";
   /**
@@ -127,10 +143,9 @@ public class TSFileConfig {
    */
   private double dftSatisfyRate = 0.1;
   /**
-   * Data compression method, TsFile supports UNCOMPRESSED or SNAPPY. Default value is UNCOMPRESSED
-   * which means no compression
+   * Data compression method, TsFile supports UNCOMPRESSED, SNAPPY or LZ4.
    */
-  private String compressor = "UNCOMPRESSED";
+  private CompressionType compressor = CompressionType.SNAPPY;
   /**
    * Line count threshold for checking page memory occupied size.
    */
@@ -172,7 +187,8 @@ public class TSFileConfig {
    */
   private boolean dfsHaAutomaticFailoverEnabled = true;
   /**
-   * Default DFS client failover proxy provider is "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider"
+   * Default DFS client failover proxy provider is
+   * "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider"
    */
   private String dfsClientFailoverProxyProvider = "org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider";
   /**
@@ -191,6 +207,10 @@ public class TSFileConfig {
    * The acceptable error rate of bloom filter
    */
   private double bloomFilterErrorRate = 0.05;
+  /**
+   * The amount of data iterate each time
+   */
+  private int batchSize = 1000;
 
   public TSFileConfig() {
 
@@ -218,6 +238,14 @@ public class TSFileConfig {
 
   public void setMaxNumberOfPointsInPage(int maxNumberOfPointsInPage) {
     this.maxNumberOfPointsInPage = maxNumberOfPointsInPage;
+  }
+
+  public int getMaxDegreeOfIndexNode() {
+    return maxDegreeOfIndexNode;
+  }
+
+  public void setMaxDegreeOfIndexNode(int maxDegreeOfIndexNode) {
+    this.maxDegreeOfIndexNode = maxDegreeOfIndexNode;
   }
 
   public String getTimeSeriesDataType() {
@@ -249,13 +277,13 @@ public class TSFileConfig {
   }
 
   public String getTimeEncoder() {
-    return timeEncoder;
+    return timeEncoding;
   }
 
   // Compression configuration
 
   public void setTimeEncoder(String timeEncoder) {
-    this.timeEncoder = timeEncoder;
+    this.timeEncoding = timeEncoder;
   }
 
   // Don't change the following configuration
@@ -316,12 +344,12 @@ public class TSFileConfig {
     this.dftSatisfyRate = dftSatisfyRate;
   }
 
-  public String getCompressor() {
+  public CompressionType getCompressor() {
     return compressor;
   }
 
   public void setCompressor(String compressor) {
-    this.compressor = compressor;
+    this.compressor = CompressionType.valueOf(compressor);
   }
 
   public int getPageCheckSizeThreshold() {
@@ -372,13 +400,12 @@ public class TSFileConfig {
     this.bloomFilterErrorRate = bloomFilterErrorRate;
   }
 
-
   public FSType getTSFileStorageFs() {
     return this.TSFileStorageFs;
   }
 
-  public void setTSFileStorageFs(String TSFileStorageFs) {
-    this.TSFileStorageFs = FSType.valueOf(TSFileStorageFs);
+  public void setTSFileStorageFs(FSType fileStorageFs) {
+    this.TSFileStorageFs = fileStorageFs;
   }
 
   public String getCoreSitePath() {
@@ -445,4 +472,11 @@ public class TSFileConfig {
     this.dfsClientFailoverProxyProvider = dfsClientFailoverProxyProvider;
   }
 
+  public int getBatchSize() {
+    return batchSize;
+  }
+
+  public void setBatchSize(int batchSize) {
+    this.batchSize = batchSize;
+  }
 }

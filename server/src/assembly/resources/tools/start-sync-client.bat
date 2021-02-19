@@ -29,7 +29,7 @@ set IOTDB_CONF=%IOTDB_HOME%\conf
 set IOTDB_LOGS=%IOTDB_HOME%\logs
 
 
-if NOT DEFINED MAIN_CLASS set MAIN_CLASS=org.apache.iotdb.db.sync.sender.transfer.DataTransferManager
+if NOT DEFINED MAIN_CLASS set MAIN_CLASS=org.apache.iotdb.db.sync.sender.transfer.SyncClient
 if NOT DEFINED JAVA_HOME goto :err
 
 @REM -----------------------------------------------------------------------------
@@ -42,11 +42,8 @@ set JAVA_OPTS=-ea^
 
 @REM ***** CLASSPATH library setting *****
 @REM Ensure that any user defined CLASSPATH variables are not used on startup
-set CLASSPATH="%IOTDB_HOME%\lib"
+set CLASSPATH="%IOTDB_HOME%\lib\*"
 
-@REM For each jar in the IOTDB_HOME lib directory call append to build the CLASSPATH variable.
-for %%i in ("%IOTDB_HOME%\lib\*.jar") do call :append "%%i"
-set CLASSPATH=%CLASSPATH%;SyncClient
 goto okClasspath
 
 :append

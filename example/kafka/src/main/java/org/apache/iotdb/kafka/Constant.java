@@ -21,6 +21,8 @@ package org.apache.iotdb.kafka;
 import org.apache.iotdb.jdbc.Config;
 
 public class Constant {
+  private Constant() {
+  }
 
   public static final String TOPIC = "Kafka-Test";
   public static final int CONSUMER_THREAD_NUM = 5;
@@ -28,8 +30,15 @@ public class Constant {
   public static final String IOTDB_CONNECTION_USER = "root";
   public static final String IOTDB_CONNECTION_PASSWORD = "root";
   public static final String STORAGE_GROUP = "root.vehicle";
-  public static final String[] ALL_TIMESERIES = {"root.vehicle.device.sensor1",
-      "root.vehicle.device.sensor2", "root.vehicle.device.sensor3", "root.vehicle.device.sensor4"};
+
+  /**
+   *  If you write level3 as device, timeseries will not be created because device is the keyword
+   */
+  public static final String[] ALL_TIMESERIES = {
+          "root.vehicle.deviceid.sensor1",
+          "root.vehicle.deviceid.sensor2",
+          "root.vehicle.deviceid.sensor3",
+          "root.vehicle.deviceid.sensor4"};
   public static final String[] ALL_DATA = {
       "sensor1,2017/10/24 19:30:00,606162908",
       "sensor2,2017/10/24 19:30:00,160161162",
